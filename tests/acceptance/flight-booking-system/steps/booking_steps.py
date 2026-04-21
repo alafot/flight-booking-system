@@ -466,6 +466,113 @@ def _assert_audit_event(container, world: dict, event_type: str) -> None:
     ), f"no {event_type} event for {ref} in {events!r}"
 
 
+# ---- Milestone 06: quote TTL + audit steps (step 06-01) ---------------------
+#
+# The quote-TTL scenarios need a flight with enough pricing context to produce
+# a deterministic QuoteCreated event and a well-formed ``expiresAt``. The
+# Background seeds a flight whose ``departure_at`` sits comfortably after the
+# frozen clock so the time-bucket math is stable, and whose cabin has a seat
+# "12C" the scenarios can quote. The clock (2026-04-25 10:00 UTC) is set by
+# the prior Background step; we add 30+ days to keep time-multiplier = 1.00.
+
+
+@given(parsers.parse('a flight "{flight_id}" with known base fare and pricing context'))
+def _seed_milestone_06_flight(container, world: dict, flight_id: str) -> None:
+    """Seed a Milestone-06 flight that can be quoted under the Background clock.
+
+    * Departs Tuesday 2026-06-02 at 08:00 UTC — 38 days after the frozen clock
+      (2026-04-25) so the time-bucket is stable at 1.00 and DOW is TUE (0.85).
+    * Cabin has seat "12C" AVAILABLE plus 99 AVAILABLE fillers (0% occupancy →
+      demand 1.00), so the exact multipliers are irrelevant to the TTL
+      assertions — the Quote simply has deterministic inputs.
+    """
+    departure = datetime(2026, 6, 2, 8, 0, tzinfo=UTC)
+    cabin = Cabin()
+    cabin.seats[SeatId("12C")] = Seat(
+        id=SeatId("12C"),
+        seat_class=SeatClass.ECONOMY,
+        kind=SeatKind.STANDARD,
+        status=SeatStatus.AVAILABLE,
+    )
+    for index in range(1, 100):
+        seat_id = SeatId(f"FILL-{index:03d}")
+        cabin.seats[seat_id] = Seat(
+            id=seat_id,
+            seat_class=SeatClass.ECONOMY,
+            kind=SeatKind.STANDARD,
+            status=SeatStatus.AVAILABLE,
+        )
+    flight = Flight(
+        id=FlightId(flight_id),
+        origin="LAX",
+        destination="NYC",
+        departure_at=departure,
+        arrival_at=departure,
+        airline="MOCK",
+        base_fare=Money.of("299"),
+        cabin=cabin,
+    )
+    container.flight_repo.add(flight)
+    world["last_flight_id"] = flight_id
+
+
+@when(parsers.parse('the traveler creates a quote for seat "{seat_id}"'))
+def _http_create_quote_for_seat(client, world: dict, seat_id: str) -> None:
+    """Drive ``POST /quotes`` and stash the response plus the returned quoteId
+    so Then steps can cross-reference the audit log."""
+    world["response"] = client.post(
+        "/quotes",
+        json={
+            "flightId": world["last_flight_id"],
+            "seatIds": [seat_id],
+            "passengers": 1,
+        },
+    )
+    body = world["response"].json() if world["response"].status_code < 500 else {}
+    world["quote_id"] = body.get("quoteId")
+
+
+@then("the response contains an expiresAt exactly 30 minutes in the future")
+def _assert_expires_at_is_thirty_minutes_ahead(
+    frozen_clock: FrozenClock, world: dict
+) -> None:
+    """Assert ``expiresAt`` is exactly clock.now() + 30 minutes.
+
+    The test uses the frozen clock as the authoritative "now" — production code
+    must read the same clock through the ``Clock`` port, so any drift between
+    the stamp and the clock indicates the QuoteService is computing TTL from
+    something else (e.g., datetime.now()) which would be a bug.
+    """
+    from datetime import timedelta
+    body = world["response"].json()
+    expires_at_str = body.get("expiresAt")
+    assert expires_at_str, f"response missing expiresAt: {body!r}"
+    expires_at = datetime.fromisoformat(expires_at_str)
+    expected = frozen_clock.now() + timedelta(minutes=30)
+    assert expires_at == expected, (
+        f"expiresAt {expires_at.isoformat()} != frozen_clock + 30min "
+        f"{expected.isoformat()}"
+    )
+
+
+@then(parsers.parse('the audit log contains a "{event_type}" event for that quote'))
+def _assert_audit_event_for_quote(
+    container, world: dict, event_type: str
+) -> None:
+    """Assert the audit log contains an event of ``event_type`` tagged with the
+    quote_id returned by the preceding POST /quotes. Mirrors the booking-level
+    assertion above but keys on ``quote_id`` because QuoteCreated events are
+    written before any booking reference exists.
+    """
+    events = getattr(container.audit, "events", [])
+    quote_id = world["quote_id"]
+    assert quote_id, "no quote_id captured from POST /quotes response"
+    assert any(
+        e.get("type") == event_type and e.get("quote_id") == quote_id
+        for e in events
+    ), f"no {event_type} event for quote {quote_id} in {events!r}"
+
+
 # ---- Adapter integration: JsonlAuditLog filesystem scenario -----------------
 
 @given("an audit log at a temporary JSON-lines file")
