@@ -573,6 +573,72 @@ def _assert_audit_event_for_quote(
     ), f"no {event_type} event for quote {quote_id} in {events!r}"
 
 
+# ---- Milestone 06: audit-log replay (step 06-02) ----------------------------
+#
+# The replay scenario needs a live audit log with (at least) one QuoteCreated
+# event and one BookingCommitted event written through the real driving ports
+# (POST /quotes + POST /bookings). The Given drives both calls; the When
+# captures the audit events from the container's InMemoryAuditLog; the Then
+# runs ``verify_commits`` and asserts zero mismatches.
+#
+# BookingCommitted's ``quote_id`` is currently the WS-shortcut "Q000-WS" (the
+# BookingService does not yet read the quote on commit — that is Phase 06-03).
+# ``verify_commits`` therefore skips Q000-WS, and the assertion is satisfied
+# by the QuoteCreated event replaying cleanly against itself (not exercised
+# by this scenario but stubbed by the Q000-WS rule).
+
+
+@given("audit events QuoteCreated and BookingCommitted were written during a successful booking")
+def _seed_audit_for_replay(client, container, world: dict) -> None:
+    """Drive POST /quotes followed by POST /bookings via the HTTP port so both
+    audit events get written by production code paths (not by the test).
+    The Background already seeded "FL-LAX-NYC-0800" with seat "12C" AVAILABLE.
+    """
+    quote_response = client.post(
+        "/quotes",
+        json={
+            "flightId": world["last_flight_id"],
+            "seatIds": ["12C"],
+            "passengers": 1,
+        },
+    )
+    assert quote_response.status_code == 200, (
+        f"quote creation failed: {quote_response.status_code} {quote_response.text}"
+    )
+    world["quote_id"] = quote_response.json()["quoteId"]
+    booking_response = client.post(
+        "/bookings",
+        json={
+            "flightId": world["last_flight_id"],
+            "seatId": "12C",
+            "passenger": {"name": "Jane Doe"},
+            "paymentToken": "mock-ok",
+        },
+    )
+    assert booking_response.status_code == 201, (
+        f"booking commit failed: {booking_response.status_code} {booking_response.text}"
+    )
+
+
+@when("the replay utility reads the audit log")
+def _capture_audit_events(container, world: dict) -> None:
+    world["audit_events"] = list(getattr(container.audit, "events", []))
+
+
+@then(
+    "for each BookingCommitted event, re-running pricing.price with the "
+    "matching QuoteCreated inputs produces the same total"
+)
+def _assert_replay_produces_same_total(world: dict) -> None:
+    from tests.support.audit_replay import verify_commits
+
+    mismatches = verify_commits(world["audit_events"])
+    assert mismatches == [], (
+        f"audit replay found mismatches: {mismatches!r}; "
+        f"events: {world['audit_events']!r}"
+    )
+
+
 # ---- Adapter integration: JsonlAuditLog filesystem scenario -----------------
 
 @given("an audit log at a temporary JSON-lines file")

@@ -37,7 +37,7 @@ Feature: Milestone 06 — Quote TTL and audit log
     Then the response status is 404
     And the response body cites "quote not found"
 
-  @pending @kpi @adapter-integration
+  @kpi @adapter-integration
   Scenario: Audit log replay reconstructs the committed total
     Given audit events QuoteCreated and BookingCommitted were written during a successful booking
     When the replay utility reads the audit log

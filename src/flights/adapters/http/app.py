@@ -90,6 +90,9 @@ _COMMIT_ERROR_HTTP_STATUS: dict[str, int] = {
     "SEAT_ALREADY_BOOKED": 409,
     "SEAT_NOT_FOR_SALE": 409,
     "FLIGHT_NOT_FOUND": 400,
+    # Phase 06-02: payment declined is a client-side financial failure —
+    # RFC 7231 reserves 402 Payment Required for this case.
+    "PAYMENT_DECLINED": 402,
 }
 
 

@@ -102,11 +102,38 @@ class BookingService:
 
             total = flight.base_fare
             payment_result = self._payment.charge(request.payment_token, total)
-            # Phase 06: handle payment_result.succeeded == False → PAYMENT_DECLINED branch.
-            assert payment_result.succeeded, "payment failure path not yet implemented (Phase 06)"
+            now = self._clock.now()
+            # Phase 06-02: payment-declined branch. When the gateway returns
+            # succeeded=False we write a PaymentFailed audit event (so the
+            # replay/forensic trail captures the attempt) and return a
+            # PAYMENT_DECLINED result — mapped to HTTP 402 by the driving
+            # adapter. No Booking is persisted; no confirmation email is
+            # queued. The request.quote_id is carried through as-is (None
+            # for the WS path, a real QuoteId once Phase 06-03 wires quote
+            # look-up on commit).
+            if not payment_result.succeeded:
+                self._audit.write(
+                    {
+                        "type": "PaymentFailed",
+                        "quote_id": (
+                            request.quote_id.value
+                            if request.quote_id is not None
+                            else None
+                        ),
+                        "flight_id": request.flight_id.value,
+                        "seat_ids": [s.value for s in request.seat_ids],
+                        "payment_token": request.payment_token,
+                        "reason": payment_result.reason or "declined",
+                        "attempted_at": now.isoformat(),
+                    }
+                )
+                return CommitResult(
+                    booking=None,
+                    error_code="PAYMENT_DECLINED",
+                    error_message="payment declined by gateway",
+                )
 
             reference = self._ids.new_booking_reference()
-            now = self._clock.now()
             quote_id = request.quote_id or QuoteId("Q000-WS")
             booking = Booking(
                 reference=reference,
@@ -120,12 +147,20 @@ class BookingService:
             )
             self._bookings.save(booking)
             self._email.queue_confirmation(booking)
+            # Phase 06-02: BookingCommitted carries quote_id and total_charged
+            # so the replay utility (``tests/support/audit_replay.py``) can
+            # reconcile the charged amount against the matching QuoteCreated
+            # event. ``quote_id`` is the "Q000-WS" sentinel when the commit
+            # ran without an upstream quote (walking-skeleton path); the
+            # replay utility explicitly skips that sentinel.
             self._audit.write(
                 {
                     "type": "BookingCommitted",
                     "booking_reference": reference.value,
+                    "quote_id": quote_id.value,
                     "flight_id": request.flight_id.value,
                     "seat_ids": [s.value for s in request.seat_ids],
+                    "total_charged": str(total.amount),
                     "at": now.isoformat(),
                 }
             )
