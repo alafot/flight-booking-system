@@ -129,10 +129,22 @@ def create_app(container: Container | None = None) -> FastAPI:
         }
 
     @app.get("/flights/{flight_id}/seats")
-    def get_seats(flight_id: str) -> dict:  # pragma: no cover — RED scaffold
-        raise HTTPException(
-            status_code=501, detail="seat map not yet implemented — Phase 03"
-        )
+    def get_seats(request: Request, flight_id: str) -> dict:
+        c = _container(request)
+        flight = c.flight_repo.get(FlightId(flight_id))
+        if flight is None:
+            raise HTTPException(status_code=404, detail="flight not found")
+        return {
+            "seats": [
+                {
+                    "seatId": seat.id.value,
+                    "class": seat.seat_class.value,
+                    "kind": seat.kind.value,
+                    "status": seat.status.value,
+                }
+                for seat in flight.cabin.seats.values()
+            ]
+        }
 
     @app.post("/quotes")
     def post_quote() -> dict:  # pragma: no cover — RED scaffold

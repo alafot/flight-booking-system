@@ -22,6 +22,7 @@ from flights.domain.model.flight import Cabin, Flight
 from flights.domain.model.ids import FlightId, SeatId
 from flights.domain.model.money import Money
 from flights.domain.model.seat import Seat, SeatClass, SeatKind, SeatStatus
+from tests.fixtures.cabin import default_cabin
 from tests.fixtures.catalog import seeded_catalog
 
 __SCAFFOLD__ = True
@@ -87,6 +88,34 @@ def _seed_catalog(container, total: int, routes: int, airlines: int, dates: int,
         container.flight_repo.add(flight)
 
 
+@given(parsers.parse(
+    'the flight "{flight_id}" has the default 30x6 cabin '
+    "(rows 1-2 First, 3-6 Business, 7-30 Economy)"
+))
+def _seed_flight_with_default_cabin(
+    container, world: dict, flight_id: str
+) -> None:
+    """Seed a flight identified by ``flight_id`` with the ADR-004 default cabin.
+
+    The departure and fare are irrelevant to milestone-03 seat-map assertions,
+    so we choose deterministic defaults. Other scenarios that need a specific
+    departure seed via the catalog-search Given instead.
+    """
+    departure = datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
+    flight = Flight(
+        id=FlightId(flight_id),
+        origin="LAX",
+        destination="NYC",
+        departure_at=departure,
+        arrival_at=departure,
+        airline="MOCK",
+        base_fare=Money.of("299"),
+        cabin=default_cabin(),
+    )
+    container.flight_repo.add(flight)
+    world["last_flight_id"] = flight_id
+
+
 @given(parsers.parse('seat "{seat_id}" in {seat_class} is AVAILABLE on that flight'))
 def _seed_seat(container, world: dict, seat_id: str, seat_class: str) -> None:
     flight = container.flight_repo.get(FlightId(world["last_flight_id"]))
@@ -149,6 +178,28 @@ def _http_search_invalid_field(client, world: dict, field: str, bad_value: str) 
     }
     params[field] = bad_value
     world["response"] = client.get("/flights/search", params=params)
+
+
+@when(parsers.parse('the traveler requests the seat map for flight "{flight_id}"'))
+def _http_get_seat_map(client, world: dict, flight_id: str) -> None:
+    world["response"] = client.get(f"/flights/{flight_id}/seats")
+
+
+@then(parsers.parse("the response contains {count:d} seats"))
+def _assert_seat_count(world: dict, count: int) -> None:
+    body = world["response"].json()
+    seats = body.get("seats", [])
+    assert len(seats) == count, f"expected {count} seats, got {len(seats)}"
+
+
+@then(parsers.parse('seat "{seat_id}" is in class "{seat_class}"'))
+def _assert_seat_class(world: dict, seat_id: str, seat_class: str) -> None:
+    body = world["response"].json()
+    seats = body.get("seats", [])
+    match = next((s for s in seats if s.get("seatId") == seat_id), None)
+    assert match is not None, f"seat {seat_id} not in response"
+    actual = match.get("class")
+    assert actual == seat_class, f"seat {seat_id}: expected class {seat_class}, got {actual}"
 
 
 @when(parsers.parse('the traveler books flight "{flight_id}" with seat "{seat_id}" for passenger "{name}" using payment token "{token}"'))
