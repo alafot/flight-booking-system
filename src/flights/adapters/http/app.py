@@ -14,12 +14,22 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from flights.adapters.http.schemas import SearchQueryParams, search_query_params
+from flights.adapters.http.schemas import (
+    QuoteRequestBody,
+    SearchQueryParams,
+    search_query_params,
+)
 from flights.application.booking_service import CommitRequest
+from flights.application.quote_service import (
+    FlightAlreadyDeparted,
+    QuoteNotFound,
+    QuoteRequest,
+)
 from flights.application.search_service import SearchRequest
 from flights.domain.model.booking import Booking
-from flights.domain.model.ids import BookingReference, FlightId, SeatId
+from flights.domain.model.ids import BookingReference, FlightId, SeatId, SessionId
 from flights.domain.model.passenger import PassengerDetails
+from flights.domain.model.quote import Quote
 
 if TYPE_CHECKING:
     from flights.composition.wire import Container
@@ -84,6 +94,30 @@ def _error_status_for(error_code: str | None) -> int:
     if error_code is None:
         return 400
     return _COMMIT_ERROR_HTTP_STATUS.get(error_code, 400)
+
+
+def _serialize_quote(quote: Quote) -> dict:
+    """Quote response payload for the HTTP wire (camelCase per API contract).
+
+    Decimals are serialised as strings to preserve precision over JSON and
+    keep the response independent of downstream float conversions.
+    """
+    breakdown = quote.price_breakdown
+    return {
+        "quoteId": quote.id.value,
+        "sessionId": quote.session_id.value,
+        "flightId": quote.flight_id.value,
+        "seatIds": [s.value for s in quote.seat_ids],
+        "passengers": quote.passengers,
+        "total": str(breakdown.total.amount),
+        "currency": breakdown.total.currency,
+        "baseFare": str(breakdown.base_fare.amount),
+        "demandMultiplier": str(breakdown.demand_multiplier),
+        "timeMultiplier": str(breakdown.time_multiplier),
+        "dayMultiplier": str(breakdown.day_multiplier),
+        "createdAt": quote.created_at.isoformat(),
+        "expiresAt": quote.expires_at.isoformat(),
+    }
 
 
 def _serialize_booking(booking: Booking) -> dict:
@@ -166,10 +200,23 @@ def create_app(container: Container | None = None) -> FastAPI:
         }
 
     @app.post("/quotes")
-    def post_quote() -> dict:  # pragma: no cover — RED scaffold
-        raise HTTPException(
-            status_code=501, detail="quotes not yet implemented — Phase 04"
+    def post_quote(request: Request, payload: QuoteRequestBody) -> dict:
+        c = _container(request)
+        quote_request = QuoteRequest(
+            flight_id=FlightId(payload.flight_id),
+            seat_ids=tuple(SeatId(s) for s in payload.seat_ids),
+            passengers=payload.passengers,
+            session_id=(
+                SessionId(payload.session_id) if payload.session_id is not None else None
+            ),
         )
+        try:
+            quote = c.quote_service.quote(quote_request)
+        except QuoteNotFound as missing:
+            raise HTTPException(status_code=404, detail=str(missing)) from missing
+        except FlightAlreadyDeparted as departed:
+            raise HTTPException(status_code=400, detail=str(departed)) from departed
+        return _serialize_quote(quote)
 
     @app.post("/seat-locks")
     def post_seat_lock() -> dict:  # pragma: no cover — RED scaffold

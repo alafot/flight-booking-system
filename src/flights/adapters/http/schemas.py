@@ -22,7 +22,32 @@ from flights.domain.model.seat import SeatClass
 MAX_PAGE_SIZE: int = 20
 MAX_PASSENGERS: int = 9
 MIN_PASSENGERS: int = 1
+MAX_SEATS_PER_QUOTE: int = 9  # mirrors passengers cap; ADR-006 keeps the two aligned
 IATA_PATTERN: str = r"^[A-Z]{3}$"
+
+
+class QuoteRequestBody(BaseModel):
+    """Validated body for ``POST /quotes`` (ADR-002 + ADR-006).
+
+    The HTTP wire shape is camelCase per the API contract; inside the app we
+    keep snake_case attributes because the application service takes a
+    ``QuoteRequest`` that uses snake_case. Pydantic's ``alias`` handles the
+    translation — clients send ``flightId`` / ``seatIds`` / ``passengers``.
+
+    Session id is optional at this phase: if omitted, the service mints one
+    and echoes it back on the response. Phase 06 will enforce session-binding
+    on commit; for now it's a pass-through identifier.
+    """
+
+    flight_id: Annotated[str, Field(alias="flightId", min_length=1)]
+    seat_ids: Annotated[
+        list[str],
+        Field(alias="seatIds", min_length=1, max_length=MAX_SEATS_PER_QUOTE),
+    ]
+    passengers: Annotated[int, Field(ge=MIN_PASSENGERS, le=MAX_PASSENGERS)]
+    session_id: Annotated[str | None, Field(alias="sessionId", default=None)] = None
+
+    model_config = {"populate_by_name": True}
 
 
 class SearchQueryParams(BaseModel):

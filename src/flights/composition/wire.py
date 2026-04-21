@@ -85,6 +85,7 @@ def build_test_container(
         audit=audit,
         clock=clock,
         ids=ids,
+        bookings=booking_repo,
     )
     seat_hold_service = SeatHoldService(locks=seat_lock_store, clock=clock)
     seat_map_service = SeatMapService(

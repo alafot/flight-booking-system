@@ -9,6 +9,7 @@ scaffold so pytest-bdd can collect the scenarios cleanly.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -508,15 +509,13 @@ def _assert_read_all(world: dict, n: int) -> None:
 
 # ---- Milestone 04: pricing steps --------------------------------------------
 #
-# Pricing scenarios drive through the pure ``flights.domain.pricing.price``
-# function — the driving port for the pricing domain. Step 04-02 will layer HTTP
-# on top; this step exercises the function directly (port-to-port at domain
-# scope per nw-tdd-methodology). For the one scenario that asserts
-# "the response status is 200", we populate ``world["response"]`` with a
-# minimal shim carrying ``status_code=200`` once pricing has run successfully —
-# HTTP-shape fidelity without pulling ``/quotes`` wiring into this slice.
-
-from dataclasses import dataclass as _dc
+# Step 04-02 wired ``POST /quotes`` to the pricing engine, so the Appendix B
+# @kpi scenarios drive through HTTP end-to-end (``_seed_http_pricing_flight``
+# Givens + ``_http_quote_no_surcharge`` When). The Scenario Outline rows and
+# the rule-table meta scenario remain at the pricing-function level — they
+# exercise multiplier selection directly, independent of HTTP wiring, so
+# keeping them in-process avoids fabricating date arithmetic that isn't
+# observable in the assertions.
 
 from flights.domain import pricing
 from flights.domain.pricing import DayOfWeek, PricingInputs
@@ -532,19 +531,63 @@ _DOW_BY_NAME: dict[str, DayOfWeek] = {
     "SUN": DayOfWeek.SUN, "Sunday":    DayOfWeek.SUN,
 }
 
-
-@_dc
-class _PricingResponseShim:
-    """Minimal response-like object so the shared ``response status is N`` step
-    can be reused by pricing scenarios that do not (yet) go through HTTP."""
-    status_code: int = 200
-    text: str = ""
+_HTTP_PRICING_FLIGHT_ID = "FL-PRICING-04"
+_HTTP_PRICING_QUOTE_SEAT = "12C"
+_HTTP_PRICING_CABIN_SIZE = 100
 
 
-def _days_before(departure_iso: str, now_iso: str) -> int:
-    dep = datetime.fromisoformat(departure_iso)
-    now = datetime.fromisoformat(now_iso)
-    return (dep.date() - now.date()).days
+def _build_http_pricing_cabin(occupancy_pct: int) -> Cabin:
+    """Construct a 100-seat cabin with ``occupancy_pct`` OCCUPIED seats so the
+    ``QuoteService``'s occupancy calculation lands in the expected demand
+    bucket. The quoted seat (``_HTTP_PRICING_QUOTE_SEAT``) is always AVAILABLE
+    so the quote succeeds — surcharges are seat-specific and out of scope.
+    """
+    cabin = Cabin()
+    cabin.seats[SeatId(_HTTP_PRICING_QUOTE_SEAT)] = Seat(
+        id=SeatId(_HTTP_PRICING_QUOTE_SEAT),
+        seat_class=SeatClass.ECONOMY,
+        kind=SeatKind.STANDARD,
+        status=SeatStatus.AVAILABLE,
+    )
+    for index in range(1, _HTTP_PRICING_CABIN_SIZE):
+        seat_id = SeatId(f"FILL-{index:03d}")
+        status = SeatStatus.OCCUPIED if index <= occupancy_pct else SeatStatus.AVAILABLE
+        cabin.seats[seat_id] = Seat(
+            id=seat_id,
+            seat_class=SeatClass.ECONOMY,
+            kind=SeatKind.STANDARD,
+            status=status,
+        )
+    return cabin
+
+
+def _seed_http_pricing_flight(
+    container, world: dict, *,
+    dow_name: str, date: str, time: str, pct: int, fare: str,
+) -> None:
+    """Register a flight whose ``departure_at.weekday()`` matches ``dow_name``
+    and whose cabin occupancy equals ``pct``. Writes through the real
+    ``InMemoryFlightRepository`` so the HTTP route observes it as production
+    state.
+    """
+    departure = datetime.fromisoformat(f"{date}T{time}:00+00:00")
+    expected_dow = _DOW_BY_NAME[dow_name]
+    actual_dow = DayOfWeek(departure.weekday())
+    assert actual_dow == expected_dow, (
+        f"feature requests {dow_name} but {date} is {actual_dow.name}"
+    )
+    flight = Flight(
+        id=FlightId(_HTTP_PRICING_FLIGHT_ID),
+        origin="LAX",
+        destination="NYC",
+        departure_at=departure,
+        arrival_at=departure,
+        airline="MOCK",
+        base_fare=Money.of(fare),
+        cabin=_build_http_pricing_cabin(pct),
+    )
+    container.flight_repo.add(flight)
+    world["last_flight_id"] = _HTTP_PRICING_FLIGHT_ID
 
 
 @given(parsers.re(
@@ -552,21 +595,18 @@ def _days_before(departure_iso: str, now_iso: str) -> int:
     r"with (?P<pct>\d+)% occupancy and base fare (?P<fare>[\d.]+) USD"
 ))
 def _seed_pricing_flight_dow_date(
-    frozen_clock: FrozenClock, world: dict,
+    container, world: dict,
     dow_name: str, date: str, pct: str, fare: str,
 ) -> None:
-    """Seed pricing context from a DOW + date + occupancy + fare. Time defaults
-    to 00:00 UTC which is fine for the days-between calculation. The regex
-    restricts ``date`` to ISO yyyy-mm-dd so the ``at HH:MM`` variant cannot
-    be accidentally captured by this pattern."""
-    dep_iso = f"{date}T00:00:00+00:00"
-    now_iso = frozen_clock.now().isoformat()
-    world["pricing_context"] = {
-        "base_fare": Money.of(fare),
-        "occupancy_pct": Decimal(int(pct)),
-        "days_before_departure": _days_before(dep_iso, now_iso),
-        "departure_dow": _DOW_BY_NAME[dow_name],
-    }
+    """Register a flight for HTTP-driven pricing scenarios. Time defaults to
+    00:00 UTC — the days-before calculation is date-based so the hour is
+    immaterial for this Given. The regex restricts ``date`` to ISO
+    yyyy-mm-dd so the ``at HH:MM`` variant cannot be accidentally captured
+    by this pattern."""
+    _seed_http_pricing_flight(
+        container, world,
+        dow_name=dow_name, date=date, time="00:00", pct=int(pct), fare=fare,
+    )
 
 
 @given(parsers.re(
@@ -575,28 +615,25 @@ def _seed_pricing_flight_dow_date(
     r"and base fare (?P<fare>[\d.]+) USD"
 ))
 def _seed_pricing_flight_dow_date_time(
-    frozen_clock: FrozenClock, world: dict,
+    container, world: dict,
     dow_name: str, date: str, time: str, pct: str, fare: str,
 ) -> None:
     """Same as the dow+date Given but the departure has an explicit clock time —
     used by Appendix B example 3 where same-day booking hinges on
     ``days_before_departure == 0`` regardless of hour-of-day."""
-    dep_iso = f"{date}T{time}:00+00:00"
-    now_iso = frozen_clock.now().isoformat()
-    world["pricing_context"] = {
-        "base_fare": Money.of(fare),
-        "occupancy_pct": Decimal(int(pct)),
-        "days_before_departure": _days_before(dep_iso, now_iso),
-        "departure_dow": _DOW_BY_NAME[dow_name],
-    }
+    _seed_http_pricing_flight(
+        container, world,
+        dow_name=dow_name, date=date, time=time, pct=int(pct), fare=fare,
+    )
 
 
 @given(parsers.parse(
     "a flight with {pct:d}% occupancy and base fare {fare} USD"
 ))
 def _seed_pricing_flight_plain(world: dict, pct: int, fare: str) -> None:
-    """Seed only base fare + occupancy; the Scenario Outline supplies the
-    days-before and DOW in the When step."""
+    """Seed only base fare + occupancy for the Scenario Outline rows — those
+    scenarios exercise multiplier selection through the pricing function as
+    its own driving port, so no HTTP flight is needed."""
     world["pricing_context"] = {
         "base_fare": Money.of(fare),
         "occupancy_pct": Decimal(pct),
@@ -605,18 +642,39 @@ def _seed_pricing_flight_plain(world: dict, pct: int, fare: str) -> None:
 
 
 @when("the traveler quotes one economy seat with no seat surcharge")
-def _price_quote_no_surcharge(world: dict) -> None:
-    ctx = world["pricing_context"]
-    breakdown = pricing.price(
-        PricingInputs(
-            base_fare=ctx["base_fare"],
-            occupancy_pct=ctx["occupancy_pct"],
-            days_before_departure=ctx["days_before_departure"],
-            departure_dow=ctx["departure_dow"],
-        )
+def _price_quote_no_surcharge(client, world: dict) -> None:
+    """Drive ``POST /quotes`` and capture the response plus a pricing-breakdown
+    projection for the shared multiplier assertions. The Appendix B scenarios
+    reach this When after their HTTP flight has been seeded.
+    """
+    response = client.post(
+        "/quotes",
+        json={
+            "flightId": world["last_flight_id"],
+            "seatIds": [_HTTP_PRICING_QUOTE_SEAT],
+            "passengers": 1,
+        },
     )
-    world["breakdown"] = breakdown
-    world["response"] = _PricingResponseShim(status_code=200)
+    world["response"] = response
+    body = response.json()
+    world["breakdown"] = _BreakdownProjection(
+        total=Money.of(body["total"]),
+        demand_multiplier=Decimal(body["demandMultiplier"]),
+        time_multiplier=Decimal(body["timeMultiplier"]),
+        day_multiplier=Decimal(body["dayMultiplier"]),
+    )
+
+
+@dataclass(frozen=True)
+class _BreakdownProjection:
+    """Flat projection of the HTTP response used by the shared total/multiplier
+    assertions. Decouples the assertion steps from the domain ``PriceBreakdown``
+    type (which carries ``base_fare``/``seat_surcharges``/``taxes``/``fees``
+    that aren't exercised at this slice)."""
+    total: Money
+    demand_multiplier: Decimal
+    time_multiplier: Decimal
+    day_multiplier: Decimal
 
 
 @when(parsers.parse(
