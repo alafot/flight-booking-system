@@ -794,6 +794,173 @@ def _assert_tables_are_module_level(world: dict) -> None:
     assert world["rule_tables"]["DOW_TABLE"] is pricing.DOW_TABLE
 
 
+# ---- Milestone 05: price-breakdown steps ------------------------------------
+#
+# Step 05-01 wires per-seat Appendix A surcharges through ``POST /quotes``.
+# The Background seeds a single flight whose departure day-of-week, occupancy
+# and days-before are pinned so the scenarios can assert the surcharge line
+# without coupling to the multiplier math (which is exercised in milestone-04).
+
+_MILESTONE_05_FLIGHT_SIZE = 100  # cabin size used for occupancy math only
+
+
+def _milestone_05_base_cabin() -> Cabin:
+    """Produce a cabin with 100 STANDARD Economy seats so occupancy math is
+    stable. Individual scenarios overwrite specific seats via the
+    ``seat "X" in {Class} has kind "{KIND}"`` step.
+    """
+    cabin = Cabin()
+    for index in range(1, _MILESTONE_05_FLIGHT_SIZE + 1):
+        seat_id = SeatId(f"FILL-{index:03d}")
+        cabin.seats[seat_id] = Seat(
+            id=seat_id,
+            seat_class=SeatClass.ECONOMY,
+            kind=SeatKind.STANDARD,
+            status=SeatStatus.AVAILABLE,
+        )
+    return cabin
+
+
+@given(parsers.parse(
+    'a flight "{flight_id}" with base fare {fare} USD, departing {dow_name} '
+    "with {pct:d}% occupancy, {days:d} days out"
+))
+def _seed_milestone_05_flight(
+    container, world: dict,
+    flight_id: str, fare: str, dow_name: str, pct: int, days: int,
+) -> None:
+    """Seed the milestone-05 Background flight.
+
+    Combines the two time inputs ("departing {dow_name}" and "{days} days out")
+    by walking forward from ``clock + days`` to the first matching weekday.
+    That keeps the feature narrative natural while ensuring day-of-week and
+    time-to-departure multipliers are deterministic for the assertions.
+    The cabin is a 100-seat Economy baseline; per-scenario Givens overwrite
+    individual seats with the kind under test.
+    """
+    from datetime import date as date_type
+    from datetime import timedelta
+
+    expected_dow = _DOW_BY_NAME[dow_name]
+    clock_date: date_type = container.clock.now().date()
+    candidate = clock_date + timedelta(days=days)
+    # Walk forward up to 6 days to find the requested weekday. Guarantees a
+    # unique deterministic date whose day-offset is within the same pricing
+    # time-bucket as ``days`` (buckets are 2-wide or wider past 3 days out).
+    offset = 0
+    while DayOfWeek(candidate.weekday()) != expected_dow:
+        candidate = candidate + timedelta(days=1)
+        offset += 1
+        assert offset < 7, (
+            f"could not find {dow_name} within 7 days after clock+{days}"
+        )
+    departure = datetime.combine(candidate, datetime.min.time(), tzinfo=UTC)
+    flight = Flight(
+        id=FlightId(flight_id),
+        origin="LAX",
+        destination="NYC",
+        departure_at=departure,
+        arrival_at=departure,
+        airline="MOCK",
+        base_fare=Money.of(fare),
+        cabin=_milestone_05_base_cabin(),
+    )
+    # Mutate occupancy to match ``pct`` by flipping the first N fillers to OCCUPIED.
+    fillers = [seat_id for seat_id in flight.cabin.seats if seat_id.value.startswith("FILL-")]
+    for i, seat_id in enumerate(fillers):
+        if i < pct:
+            existing = flight.cabin.seats[seat_id]
+            flight.cabin.seats[seat_id] = Seat(
+                id=existing.id,
+                seat_class=existing.seat_class,
+                kind=existing.kind,
+                status=SeatStatus.OCCUPIED,
+            )
+    container.flight_repo.add(flight)
+    world["last_flight_id"] = flight_id
+
+
+@given(parsers.parse('seat "{seat_id}" in {seat_class} has kind "{kind}"'))
+def _set_seat_kind(container, world: dict, seat_id: str, seat_class: str, kind: str) -> None:
+    """Overwrite a seat in the previously-seeded flight's cabin with the given
+    class + kind. The seat exists as a STANDARD Economy filler from the
+    Background; this Given upgrades it so the pricing scenarios can exercise
+    the Appendix A surcharge lookup.
+    """
+    flight = container.flight_repo.get(FlightId(world["last_flight_id"]))
+    if flight is None:
+        raise AssertionError("flight not seeded before seat-kind override")
+    flight.cabin.seats[SeatId(seat_id)] = Seat(
+        id=SeatId(seat_id),
+        seat_class=SeatClass[seat_class.upper()],
+        kind=SeatKind[kind.upper()],
+        status=SeatStatus.AVAILABLE,
+    )
+
+
+@when(parsers.parse('the traveler quotes seat "{seat_id}"'))
+def _http_quote_single_seat(client, world: dict, seat_id: str) -> None:
+    """Drive ``POST /quotes`` for exactly one seat on the last-seeded flight."""
+    world["response"] = client.post(
+        "/quotes",
+        json={
+            "flightId": world["last_flight_id"],
+            "seatIds": [seat_id],
+            "passengers": 1,
+        },
+    )
+
+
+@then(parsers.parse(
+    'the breakdown\'s seat_surcharges list contains exactly '
+    "{{ seat: \"{seat}\", amount: {amount} }}"
+))
+def _assert_seat_surcharges_exactly(world: dict, seat: str, amount: str) -> None:
+    """Assert the response's seat_surcharges list has exactly one entry
+    matching (seat, amount). ``amount`` is a decimal string like ``35.00``
+    or ``-5.00`` — compared via ``Money.of`` to normalise precision.
+    """
+    body = world["response"].json()
+    lines = body.get("seatSurcharges")
+    assert isinstance(lines, list), (
+        f"expected seatSurcharges list, got {lines!r} in {body!r}"
+    )
+    assert len(lines) == 1, (
+        f"expected exactly 1 seat_surcharge line, got {len(lines)}: {lines!r}"
+    )
+    line = lines[0]
+    assert line.get("seat") == seat, (
+        f"expected seat {seat!r}, got {line.get('seat')!r}"
+    )
+    assert Money.of(line.get("amount")) == Money.of(amount), (
+        f"expected amount {amount}, got {line.get('amount')!r}"
+    )
+
+
+@then(parsers.parse(
+    'the breakdown\'s seat_surcharges list contains '
+    "{{ seat: \"{seat}\", amount: {amount} }}"
+))
+def _assert_seat_surcharges_contains(world: dict, seat: str, amount: str) -> None:
+    """Assert the response's seat_surcharges list contains an entry matching
+    (seat, amount). Used by scenarios that may add more lines in later slices
+    (e.g., once taxes/fees flow as separate lines).
+    """
+    body = world["response"].json()
+    lines = body.get("seatSurcharges")
+    assert isinstance(lines, list), (
+        f"expected seatSurcharges list, got {lines!r} in {body!r}"
+    )
+    match = next(
+        (ln for ln in lines if ln.get("seat") == seat
+         and Money.of(ln.get("amount")) == Money.of(amount)),
+        None,
+    )
+    assert match is not None, (
+        f"expected a seat_surcharge {{seat={seat!r}, amount={amount}}} in {lines!r}"
+    )
+
+
 # ---- Pending-steps fallback --------------------------------------------------
 # For milestone scenarios that are @pending, pytest-bdd collects them but they
 # are skipped by `pytest_collection_modifyitems` in conftest.py before any step

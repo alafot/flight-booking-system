@@ -70,8 +70,39 @@ DOW_TABLE: dict[DayOfWeek, Decimal] = {
     DayOfWeek.SUN: Decimal("1.30"),
 }
 
-# Appendix A — later step fills this from ADR-004.
-SURCHARGES: dict[tuple[SeatClass, SeatKind], Money] = {}
+# --- Appendix A: per-seat surcharges (ADR-004) -------------------------------
+# Single source of truth for ``(seat_class, seat_kind) -> Money``. An entry
+# here is the one place an Appendix A number is edited. Missing entries are
+# treated by ``lookup_seat_surcharge`` as neutral (Money.of("0")) — the kind
+# has no surcharge in that cabin.
+#
+# Premium Economy entries (below) are documented for the future ADR-007 flip
+# day. ``SeatClass`` currently has no ``PREMIUM_ECONOMY`` member so these
+# pairs are unreachable from any cabin fixture; they remain commented to
+# preserve Appendix A coverage without widening the enum.
+#
+#     (SeatClass.PREMIUM_ECONOMY, SeatKind.STANDARD):    Money.of("0"),
+#     (SeatClass.PREMIUM_ECONOMY, SeatKind.EXIT_ROW):   Money.of("50"),
+#     (SeatClass.PREMIUM_ECONOMY, SeatKind.BULKHEAD):   Money.of("40"),
+#     (SeatClass.PREMIUM_ECONOMY, SeatKind.WINDOW):     Money.of("30"),
+SURCHARGES: dict[tuple[SeatClass, SeatKind], Money] = {
+    # Economy
+    (SeatClass.ECONOMY,  SeatKind.STANDARD):      Money.of("0"),
+    (SeatClass.ECONOMY,  SeatKind.EXIT_ROW):      Money.of("35"),
+    (SeatClass.ECONOMY,  SeatKind.FRONT_SECTION): Money.of("25"),
+    (SeatClass.ECONOMY,  SeatKind.AISLE):         Money.of("15"),
+    (SeatClass.ECONOMY,  SeatKind.WINDOW):        Money.of("15"),
+    (SeatClass.ECONOMY,  SeatKind.MIDDLE):        Money.of("-5"),
+    # Business
+    (SeatClass.BUSINESS, SeatKind.STANDARD):       Money.of("0"),
+    (SeatClass.BUSINESS, SeatKind.LIE_FLAT_SUITE): Money.of("200"),
+    (SeatClass.BUSINESS, SeatKind.WINDOW_SUITE):   Money.of("100"),
+    (SeatClass.BUSINESS, SeatKind.AISLE_ACCESS):   Money.of("75"),
+    # First
+    (SeatClass.FIRST,    SeatKind.STANDARD):      Money.of("0"),
+    (SeatClass.FIRST,    SeatKind.PRIVATE_SUITE): Money.of("500"),
+    (SeatClass.FIRST,    SeatKind.FRONT_ROW):     Money.of("150"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +156,10 @@ def price(inputs: PricingInputs) -> PriceBreakdown:
 
 
 def lookup_seat_surcharge(seat_class: SeatClass, kind: SeatKind) -> Money:
-    raise AssertionError(
-        "Not yet implemented — RED scaffold (pricing.lookup_seat_surcharge)"
-    )
+    """Return the Appendix A surcharge for ``(seat_class, kind)``.
+
+    An unmapped pair returns ``Money.of("0")`` — the kind simply has no
+    priced surcharge in that cabin class. Callers iterate seat ids; they do
+    not need to branch on "known vs unknown" themselves.
+    """
+    return SURCHARGES.get((seat_class, kind), Money.of("0"))

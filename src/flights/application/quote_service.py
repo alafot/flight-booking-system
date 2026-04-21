@@ -19,7 +19,7 @@ from flights.domain import pricing
 from flights.domain.model.booking import BookingStatus
 from flights.domain.model.flight import Flight
 from flights.domain.model.ids import FlightId, SeatId, SessionId
-from flights.domain.model.quote import PriceBreakdown, Quote
+from flights.domain.model.quote import PriceBreakdown, Quote, SeatSurchargeLine
 from flights.domain.model.seat import SeatStatus
 from flights.domain.ports import (
     AuditLog,
@@ -82,12 +82,14 @@ class QuoteService:
 
         occupancy_pct = self._occupancy_pct(flight)
         departure_dow = DayOfWeek(flight.departure_at.weekday())
+        surcharges = self._seat_surcharges(flight, request.seat_ids)
         breakdown = pricing.price(
             PricingInputs(
                 base_fare=flight.base_fare,
                 occupancy_pct=occupancy_pct,
                 days_before_departure=days_before,
                 departure_dow=departure_dow,
+                surcharges=surcharges,
             )
         )
 
@@ -134,6 +136,26 @@ class QuoteService:
         )
         booked = self._active_booked_seat_count(flight.id)
         return Decimal(cabin_occupied + booked) / Decimal(total) * Decimal(100)
+
+    @staticmethod
+    def _seat_surcharges(
+        flight: Flight, seat_ids: tuple[SeatId, ...]
+    ) -> tuple[SeatSurchargeLine, ...]:
+        """Compute per-seat surcharge lines from the cabin's (class, kind) map.
+
+        A seat requested that isn't in the cabin is skipped silently here; the
+        downstream ``BookingService.commit`` validates seat membership and
+        returns UNKNOWN_SEAT with a 400. Pricing is advisory — a quote for an
+        unknown seat still returns a breakdown, the commit fails.
+        """
+        lines: list[SeatSurchargeLine] = []
+        for seat_id in seat_ids:
+            seat = flight.cabin.seats.get(seat_id)
+            if seat is None:
+                continue
+            amount = pricing.lookup_seat_surcharge(seat.seat_class, seat.kind)
+            lines.append(SeatSurchargeLine(seat=seat_id, amount=amount))
+        return tuple(lines)
 
     def _active_booked_seat_count(self, flight_id: FlightId) -> int:
         count = 0

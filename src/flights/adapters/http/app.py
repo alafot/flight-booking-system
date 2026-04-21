@@ -115,6 +115,10 @@ def _serialize_quote(quote: Quote) -> dict:
         "demandMultiplier": str(breakdown.demand_multiplier),
         "timeMultiplier": str(breakdown.time_multiplier),
         "dayMultiplier": str(breakdown.day_multiplier),
+        "seatSurcharges": [
+            {"seat": line.seat.value, "amount": str(line.amount.amount)}
+            for line in breakdown.seat_surcharges
+        ],
         "createdAt": quote.created_at.isoformat(),
         "expiresAt": quote.expires_at.isoformat(),
     }
