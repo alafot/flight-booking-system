@@ -1,12 +1,18 @@
-"""Audit log adapters — InMemory (mirror) and Jsonl (file) (partial scaffold).
+"""Audit log adapters — InMemory (mirror) and Jsonl (file).
 
 ADR-006: append-only, synchronous write inside the commit critical section.
-Step 01-02 implements ``InMemoryAuditLog.write``. ``JsonlAuditLog`` remains a
-RED scaffold until step 01-03 (adapter-integration scenario).
+Step 01-02 implemented ``InMemoryAuditLog``. Step 01-03 adds the real-I/O
+``JsonlAuditLog`` which appends JSON-lines to a file on disk — the primary
+persistence adapter for the audit trail.
+
+Non-JSON-serialisable fields (``Decimal``, ``BookingReference``, etc.) are
+coerced to strings via ``default=str`` so the write never fails on domain
+value objects.
 """
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 
@@ -35,8 +41,17 @@ class JsonlAuditLog:
         return self._path
 
     def write(self, event: dict) -> None:
-        raise AssertionError("Not yet implemented — RED scaffold (JsonlAuditLog.write)")
+        with self._lock:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(event, default=str)
+            with self._path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+                fh.write("\n")
 
     def read_all(self) -> list[dict]:
         """Read back events from the file; used by auditors and replay tests."""
-        raise AssertionError("Not yet implemented — RED scaffold (JsonlAuditLog.read_all)")
+        with self._lock:
+            if not self._path.exists():
+                return []
+            with self._path.open("r", encoding="utf-8") as fh:
+                return [json.loads(line) for line in fh if line.strip()]
