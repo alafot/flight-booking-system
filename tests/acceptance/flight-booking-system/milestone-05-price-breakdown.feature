@@ -32,7 +32,7 @@ Feature: Milestone 05 — Price breakdown with surcharges, taxes, and fees
     Then the total equals base_fare * demand_multiplier * time_multiplier * day_multiplier + surcharges + taxes + fees
     And the computation can be reproduced on paper from the response fields
 
-  @pending
+  @kpi
   Scenario: Domestic vs international tax rates
     Given flight "FL-LAX-NYC-0800" is marked "domestic"
     When the traveler quotes one seat

@@ -117,7 +117,11 @@ class TestQuoteEndpointAppendixB:
         assert response.status_code == 200, response.text
         body = response.json()
         # Money is carried as string to preserve Decimal precision over JSON.
-        assert body["total"] == "228.74"
+        # Step 05-02: total now includes domestic tax (7.5% of taxable base).
+        # Pre-tax: 299 × 1.00 × 0.90 × 0.85 = 228.735.
+        # Tax:     228.735 × 0.075 = 17.155125.
+        # Total:   228.735 + 17.155125 = 245.890125 → 245.89 (half-even).
+        assert body["total"] == "245.89"
         assert body["currency"] == "USD"
         assert body["demandMultiplier"] == "1.00"
         assert body["timeMultiplier"] == "0.90"
@@ -178,7 +182,8 @@ class TestQuoteEndpointAuditEvent:
         assert event["days_before_departure"] == 30
         assert event["departure_dow"] == "TUE"
         assert event["base_fare"] == "299.00"
-        assert event["total"] == "228.74"
+        # Step 05-02: total = pre-tax 228.735 + domestic tax 17.155125 → 245.89.
+        assert event["total"] == "245.89"
         assert event["created_at"] == "2026-05-03T10:00:00+00:00"
         assert event["expires_at"] == "2026-05-03T10:30:00+00:00"
         # session_id is always present — generated if not supplied.

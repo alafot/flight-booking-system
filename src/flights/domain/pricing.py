@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import IntEnum
 
+from flights.domain.model.flight import RouteKind
 from flights.domain.model.money import Money
 from flights.domain.model.quote import PriceBreakdown, SeatSurchargeLine
 from flights.domain.model.seat import SeatClass, SeatKind
@@ -104,6 +105,22 @@ SURCHARGES: dict[tuple[SeatClass, SeatKind], Money] = {
     (SeatClass.FIRST,    SeatKind.FRONT_ROW):     Money.of("150"),
 }
 
+# --- Step 05-02: taxes and fees ---------------------------------------------
+# Two flat tax rates per ADR-007. Editing a rate is a one-location change —
+# callers read through ``TAX_RATES[route_kind]`` (or via ``compute_taxes``).
+# Per-jurisdiction rates are deferred; the dict shape generalises to that
+# future state without a schema change.
+TAX_RATES: dict[RouteKind, Decimal] = {
+    RouteKind.DOMESTIC:      Decimal("0.075"),
+    RouteKind.INTERNATIONAL: Decimal("0.12"),
+}
+
+# Flat per-quote fees table. Empty this iteration — the contract supports
+# per-route or per-flight entries but no entries are populated until a
+# future step wires a lookup. ``lookup_flat_fees`` returns ``Money.of("0")``
+# for any miss, so today's quote service passes zero fees unconditionally.
+FEES_TABLE: dict[str, Money] = {}
+
 
 @dataclass(frozen=True, slots=True)
 class PricingInputs:
@@ -163,3 +180,27 @@ def lookup_seat_surcharge(seat_class: SeatClass, kind: SeatKind) -> Money:
     not need to branch on "known vs unknown" themselves.
     """
     return SURCHARGES.get((seat_class, kind), Money.of("0"))
+
+
+def compute_taxes(taxable_base: Money, route_kind: RouteKind) -> Money:
+    """Apply the flat tax rate for ``route_kind`` to ``taxable_base``.
+
+    The caller is responsible for building the taxable base — per the step
+    brief (ADR-007 reaffirmed): ``taxable_base = base × multipliers + Σ
+    surcharges``. This function holds full Decimal precision; the final
+    rounding happens when ``PriceBreakdown.total`` quantizes the sum
+    (``base × mult + surcharges + taxes + fees``). See ADR-003 rounding
+    policy + Appendix B worked examples.
+    """
+    rate = TAX_RATES[route_kind]
+    return Money(taxable_base.amount * rate, taxable_base.currency)
+
+
+def lookup_flat_fees(flight_id: str) -> Money:
+    """Return the flat per-quote fee for ``flight_id`` (step 05-02).
+
+    The table is empty this iteration — any flight_id yields ``Money.of("0")``.
+    Kept as a function so future slices can plug a richer lookup without
+    touching the QuoteService call site.
+    """
+    return FEES_TABLE.get(flight_id, Money.of("0"))

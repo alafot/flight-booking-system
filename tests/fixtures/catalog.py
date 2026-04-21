@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from flights.domain.model.flight import Cabin, Flight
+from flights.domain.model.flight import Cabin, Flight, RouteKind
 from flights.domain.model.ids import FlightId, SeatId
 from flights.domain.model.money import Money
 from flights.domain.model.seat import Seat, SeatClass, SeatKind
@@ -26,6 +26,12 @@ from flights.domain.model.seat import Seat, SeatClass, SeatKind
 ORIGINS: tuple[str, ...] = ("LAX", "JFK", "SFO", "ORD", "DFW")
 DESTINATIONS: tuple[str, ...] = ("NYC", "LAX", "SEA", "MIA", "BOS")
 AIRLINES: tuple[str, ...] = ("AA", "UA", "DL", "WN", "AS")
+# Routes whose destination sits outside the US are flagged INTERNATIONAL for
+# step 05-02 tax-rate selection. All current destinations are domestic, so
+# we extend the catalog explicitly via ``_international_flights`` below to
+# exercise the RouteKind.INTERNATIONAL branch without changing the shape of
+# the happy-path search scenarios.
+INTERNATIONAL_DESTINATIONS: frozenset[str] = frozenset({"LHR", "CDG", "NRT", "SYD"})
 CATALOG_START_DATE = datetime(2026, 6, 1, tzinfo=UTC)
 CATALOG_DAYS = 30
 BASE_FARE_USD = "299"
@@ -61,6 +67,44 @@ def _seed_cabin() -> Cabin:
     return cabin
 
 
+def _international_flights(base_fare: Money) -> list[Flight]:
+    """Produce a handful of INTERNATIONAL flights (step 05-02).
+
+    Deterministic: same routes, dates, airlines on every call. Included so
+    the seeded catalog exercises both tax-rate branches without forcing
+    every domestic scenario to assert on a RouteKind argument.
+    """
+    international_routes = (
+        ("LAX", "LHR"),
+        ("JFK", "CDG"),
+        ("SFO", "NRT"),
+        ("LAX", "SYD"),
+    )
+    flights: list[Flight] = []
+    for route_index, (origin, destination) in enumerate(international_routes):
+        for day_offset in range(CATALOG_DAYS):
+            departure_date = CATALOG_START_DATE + timedelta(days=day_offset)
+            departure_at = departure_date.replace(hour=21)  # evening long-haul
+            arrival_at = departure_at + timedelta(hours=FLIGHT_DURATION_HOURS * 2)
+            airline = AIRLINES[(route_index + day_offset) % len(AIRLINES)]
+            date_iso = departure_date.date().isoformat()
+            flight_id = f"FL-{origin}-{destination}-{date_iso}-{airline}"
+            flights.append(
+                Flight(
+                    id=FlightId(flight_id),
+                    origin=origin,
+                    destination=destination,
+                    departure_at=departure_at,
+                    arrival_at=arrival_at,
+                    airline=airline,
+                    base_fare=base_fare,
+                    cabin=_seed_cabin(),
+                    route_kind=RouteKind.INTERNATIONAL,
+                )
+            )
+    return flights
+
+
 def seeded_catalog() -> list[Flight]:
     """Return a reproducible catalog of ≥200 flights.
 
@@ -79,6 +123,13 @@ def seeded_catalog() -> list[Flight]:
             airline = AIRLINES[(route_index + day_offset) % len(AIRLINES)]
             date_iso = departure_date.date().isoformat()
             flight_id = f"FL-{origin}-{destination}-{date_iso}-{airline}"
+            # All ORIGINS × DESTINATIONS are US domestic; INTERNATIONAL
+            # flights are appended separately below.
+            route_kind = (
+                RouteKind.INTERNATIONAL
+                if destination in INTERNATIONAL_DESTINATIONS
+                else RouteKind.DOMESTIC
+            )
             flights.append(
                 Flight(
                     id=FlightId(flight_id),
@@ -89,6 +140,8 @@ def seeded_catalog() -> list[Flight]:
                     airline=airline,
                     base_fare=base_fare,
                     cabin=_seed_cabin(),
+                    route_kind=route_kind,
                 )
             )
+    flights.extend(_international_flights(base_fare))
     return flights

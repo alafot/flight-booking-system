@@ -19,6 +19,7 @@ from flights.domain import pricing
 from flights.domain.model.booking import BookingStatus
 from flights.domain.model.flight import Flight
 from flights.domain.model.ids import FlightId, SeatId, SessionId
+from flights.domain.model.money import Money
 from flights.domain.model.quote import PriceBreakdown, Quote, SeatSurchargeLine
 from flights.domain.model.seat import SeatStatus
 from flights.domain.ports import (
@@ -83,6 +84,14 @@ class QuoteService:
         occupancy_pct = self._occupancy_pct(flight)
         departure_dow = DayOfWeek(flight.departure_at.weekday())
         surcharges = self._seat_surcharges(flight, request.seat_ids)
+        taxes = self._compute_taxes(
+            flight=flight,
+            occupancy_pct=occupancy_pct,
+            days_before=days_before,
+            departure_dow=departure_dow,
+            surcharges=surcharges,
+        )
+        fees = pricing.lookup_flat_fees(flight.id.value)
         breakdown = pricing.price(
             PricingInputs(
                 base_fare=flight.base_fare,
@@ -90,6 +99,8 @@ class QuoteService:
                 days_before_departure=days_before,
                 departure_dow=departure_dow,
                 surcharges=surcharges,
+                taxes=taxes,
+                fees=fees,
             )
         )
 
@@ -136,6 +147,31 @@ class QuoteService:
         )
         booked = self._active_booked_seat_count(flight.id)
         return Decimal(cabin_occupied + booked) / Decimal(total) * Decimal(100)
+
+    @staticmethod
+    def _compute_taxes(
+        *,
+        flight: Flight,
+        occupancy_pct: Decimal,
+        days_before: int,
+        departure_dow: DayOfWeek,
+        surcharges: tuple[SeatSurchargeLine, ...],
+    ) -> Money:
+        """Build the taxable base and apply the route's tax rate (step 05-02).
+
+        Taxable base = ``base × demand × time × day + Σ surcharges`` held at
+        full Decimal precision — rounding is deferred to Money.of inside
+        ``compute_taxes`` so the applied rate sees the same number the
+        multipliers produced (not a pre-rounded cent value).
+        """
+        demand = pricing._demand_multiplier(occupancy_pct)
+        time = pricing._time_multiplier(days_before)
+        dow = pricing._day_multiplier(departure_dow)
+        taxable_amount = flight.base_fare.amount * demand * time * dow
+        for line in surcharges:
+            taxable_amount += line.amount.amount
+        taxable_base = Money(taxable_amount, flight.base_fare.currency)
+        return pricing.compute_taxes(taxable_base, flight.route_kind)
 
     @staticmethod
     def _seat_surcharges(

@@ -28,6 +28,7 @@ from flights.application.quote_service import (
 from flights.application.search_service import SearchRequest
 from flights.domain.model.booking import Booking
 from flights.domain.model.ids import BookingReference, FlightId, SeatId, SessionId
+from flights.domain.model.money import Money
 from flights.domain.model.passenger import PassengerDetails
 from flights.domain.model.quote import Quote
 
@@ -101,6 +102,12 @@ def _serialize_quote(quote: Quote) -> dict:
 
     Decimals are serialised as strings to preserve precision over JSON and
     keep the response independent of downstream float conversions.
+
+    ``taxes`` and ``fees`` carry full Decimal precision internally so that
+    ``PriceBreakdown.total`` can round exactly once at the end (Appendix B
+    rule). For the HTTP wire we project them through ``Money.of`` so the
+    response exposes cent-quantized values — matching the base_fare/total
+    display convention.
     """
     breakdown = quote.price_breakdown
     return {
@@ -119,6 +126,8 @@ def _serialize_quote(quote: Quote) -> dict:
             {"seat": line.seat.value, "amount": str(line.amount.amount)}
             for line in breakdown.seat_surcharges
         ],
+        "taxes": str(Money.of(breakdown.taxes.amount, breakdown.taxes.currency).amount),
+        "fees": str(Money.of(breakdown.fees.amount, breakdown.fees.currency).amount),
         "createdAt": quote.created_at.isoformat(),
         "expiresAt": quote.expires_at.isoformat(),
     }

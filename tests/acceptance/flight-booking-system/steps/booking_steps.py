@@ -961,6 +961,107 @@ def _assert_seat_surcharges_contains(world: dict, seat: str, amount: str) -> Non
     )
 
 
+# ---- Milestone 05: taxes steps (step 05-02) ---------------------------------
+#
+# Step 05-02 wires two flat tax rates (domestic 7.5%, international 12%) into
+# ``POST /quotes``. The Givens below mark an already-seeded flight as
+# ``domestic`` or mint a fresh ``international`` flight; the assertion
+# re-computes the expected taxable base from the response's multipliers so a
+# test failure reports the exact discrepancy.
+
+from flights.domain.model.flight import RouteKind
+from flights.domain.pricing import TAX_RATES
+
+
+@given(parsers.parse('flight "{flight_id}" is marked "{kind}"'))
+def _mark_flight_route_kind(
+    container, world: dict, flight_id: str, kind: str,
+) -> None:
+    """Pin a flight's RouteKind so POST /quotes selects the matching tax rate.
+
+    For ``domestic`` we assume the Background already seeded ``flight_id``
+    (default DOMESTIC, so this is effectively a narrative check). For
+    ``international`` we add a brand-new flight — the Background's
+    FL-LAX-NYC-0800 stays DOMESTIC so the first sub-scenario still asserts
+    cleanly against it.
+    """
+    requested = RouteKind[kind.upper()]
+    existing = container.flight_repo.get(FlightId(flight_id))
+    if existing is not None:
+        # Mutate in place — the InMemoryFlightRepository holds the dataclass
+        # instance, so setting ``route_kind`` on it is observed by the next
+        # HTTP call. Flight is a mutable dataclass (not frozen).
+        existing.route_kind = requested
+        world["last_flight_id"] = flight_id
+        return
+    # Mint a fresh INTERNATIONAL flight aligned with the Background's clock
+    # and fare so the taxable base is reproducible without re-stating the
+    # whole pricing context in the feature file.
+    background = container.flight_repo.get(FlightId(world["last_flight_id"]))
+    if background is None:
+        raise AssertionError("Background flight missing — cannot clone pricing context")
+    flight = Flight(
+        id=FlightId(flight_id),
+        origin="LAX",
+        destination=flight_id.split("-")[2] if "-" in flight_id else "LHR",
+        departure_at=background.departure_at,
+        arrival_at=background.arrival_at,
+        airline="MOCK",
+        base_fare=background.base_fare,
+        cabin=_milestone_05_base_cabin(),
+        route_kind=requested,
+    )
+    container.flight_repo.add(flight)
+    world["last_flight_id"] = flight_id
+
+
+@when("the traveler quotes one seat")
+def _http_quote_one_seat_on_current_flight(client, world: dict) -> None:
+    """Drive POST /quotes for any single seat on the last-marked flight."""
+    seat_id = "FILL-001"
+    world["response"] = client.post(
+        "/quotes",
+        json={
+            "flightId": world["last_flight_id"],
+            "seatIds": [seat_id],
+            "passengers": 1,
+        },
+    )
+
+
+@when("the traveler quotes one seat on that flight")
+def _http_quote_one_seat_on_that_flight(client, world: dict) -> None:
+    """Alias When — same action, feature-file phrasing varies for readability."""
+    _http_quote_one_seat_on_current_flight(client, world)
+
+
+@then(parsers.parse("the taxes line equals the configured {kind} rate times the base"))
+def _assert_taxes_line_matches_rate_times_base(world: dict, kind: str) -> None:
+    """Re-derive the expected tax amount from the response's own breakdown
+    fields — this proves the production code applied the correct RouteKind
+    rate to ``(base × multipliers + Σ surcharges)`` rather than to the raw
+    base fare alone.
+    """
+    body = world["response"].json()
+    assert "taxes" in body, f"missing 'taxes' in response body: {body!r}"
+    base_fare = Decimal(body["baseFare"])
+    demand = Decimal(body["demandMultiplier"])
+    time = Decimal(body["timeMultiplier"])
+    day = Decimal(body["dayMultiplier"])
+    surcharges_sum = sum(
+        (Decimal(line["amount"]) for line in body.get("seatSurcharges", [])),
+        Decimal("0"),
+    )
+    taxable_base = base_fare * demand * time * day + surcharges_sum
+    expected_rate = TAX_RATES[RouteKind[kind.upper()]]
+    expected_taxes = Money.of(taxable_base * expected_rate)
+    actual_taxes = Money.of(body["taxes"])
+    assert actual_taxes == expected_taxes, (
+        f"expected taxes {expected_taxes.amount} ({kind} rate {expected_rate} "
+        f"× taxable base {taxable_base}), got {actual_taxes.amount}"
+    )
+
+
 # ---- Pending-steps fallback --------------------------------------------------
 # For milestone scenarios that are @pending, pytest-bdd collects them but they
 # are skipped by `pytest_collection_modifyitems` in conftest.py before any step
