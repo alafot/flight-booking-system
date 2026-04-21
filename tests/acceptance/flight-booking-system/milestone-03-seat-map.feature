@@ -14,20 +14,17 @@ Feature: Milestone 03 — Seat map and seat-specific commit
     And seat "5C" is in class "BUSINESS"
     And seat "12C" is in class "ECONOMY"
 
-  @pending
   Scenario: Booking a non-existent seat
     When the traveler books flight "FL-LAX-NYC-0800" with seat "99Z"
     Then the response status is 400
     And the response body cites "unknown seat"
 
-  @pending
   Scenario: Booking an already-OCCUPIED seat
     Given seat "12C" is OCCUPIED on flight "FL-LAX-NYC-0800"
     When the traveler books flight "FL-LAX-NYC-0800" with seat "12C"
     Then the response status is 409
     And the response body cites "seat already booked"
 
-  @pending
   Scenario: Booking a BLOCKED seat
     Given seat "14A" is BLOCKED for maintenance on flight "FL-LAX-NYC-0800"
     When the traveler books flight "FL-LAX-NYC-0800" with seat "14A"

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from flights.domain.model.booking import Booking, BookingStatus
 from flights.domain.model.ids import BookingReference, FlightId, QuoteId, SeatId, SessionId
 from flights.domain.model.passenger import PassengerDetails
+from flights.domain.model.seat import SeatStatus
 from flights.domain.ports import (
     AuditLog,
     BookingRepository,
@@ -91,6 +92,14 @@ class BookingService:
             # Phase 04: verify quote via self._quotes.get_valid(request.quote_id, now).
             # Phase 07: verify lock via self._locks.is_valid(request.lock_id, now).
 
+            # Step 03-03: seat validation BEFORE charging payment. The three
+            # branches below correspond to the three failure modes enumerated
+            # in the milestone-03 feature: unknown seat (400), blocked seat
+            # (409), and already-booked seat (409).
+            seat_error = self._validate_seats(flight, request)
+            if seat_error is not None:
+                return seat_error
+
             total = flight.base_fare
             payment_result = self._payment.charge(request.payment_token, total)
             # Phase 06: handle payment_result.succeeded == False → PAYMENT_DECLINED branch.
@@ -124,3 +133,46 @@ class BookingService:
 
     def get(self, reference: BookingReference) -> Booking | None:
         return self._bookings.get(reference)
+
+    def _validate_seats(
+        self, flight: "object", request: CommitRequest
+    ) -> CommitResult | None:
+        """Validate every requested seat against the cabin and current bookings.
+
+        Returns a ``CommitResult`` with the appropriate error code on the first
+        failing seat, or ``None`` if all seats pass. Validation runs in this
+        order for each seat: identity (unknown) -> status (blocked) -> conflict
+        (already booked). Payment is not charged if any seat fails.
+        """
+        cabin_seats = flight.cabin.seats  # type: ignore[attr-defined]
+        for seat_id in request.seat_ids:
+            seat = cabin_seats.get(seat_id)
+            if seat is None:
+                return CommitResult(
+                    booking=None,
+                    error_code="UNKNOWN_SEAT",
+                    error_message=f"unknown seat: {seat_id.value}",
+                )
+            if seat.status == SeatStatus.BLOCKED:
+                return CommitResult(
+                    booking=None,
+                    error_code="SEAT_NOT_FOR_SALE",
+                    error_message=f"seat not for sale: {seat_id.value}",
+                )
+            if self._seat_already_booked(request.flight_id, seat_id):
+                return CommitResult(
+                    booking=None,
+                    error_code="SEAT_ALREADY_BOOKED",
+                    error_message=f"seat already booked: {seat_id.value}",
+                )
+        return None
+
+    def _seat_already_booked(self, flight_id: FlightId, seat_id: SeatId) -> bool:
+        for existing in self._bookings.iter_all():
+            if existing.flight_id != flight_id:
+                continue
+            if existing.status != BookingStatus.CONFIRMED:
+                continue
+            if seat_id in existing.seat_ids:
+                return True
+        return False

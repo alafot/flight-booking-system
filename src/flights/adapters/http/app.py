@@ -68,6 +68,24 @@ def _serialize_flight(flight: Any) -> dict:
     }
 
 
+# Map BookingService commit error codes to HTTP status codes. Anything not
+# listed here falls back to 400 (bad request) — this preserves the existing
+# behaviour for FLIGHT_NOT_FOUND while making the seat-validation branches
+# from step 03-03 explicit.
+_COMMIT_ERROR_HTTP_STATUS: dict[str, int] = {
+    "UNKNOWN_SEAT": 400,
+    "SEAT_ALREADY_BOOKED": 409,
+    "SEAT_NOT_FOR_SALE": 409,
+    "FLIGHT_NOT_FOUND": 400,
+}
+
+
+def _error_status_for(error_code: str | None) -> int:
+    if error_code is None:
+        return 400
+    return _COMMIT_ERROR_HTTP_STATUS.get(error_code, 400)
+
+
 def _serialize_booking(booking: Booking) -> dict:
     return {
         "bookingReference": booking.reference.value,
@@ -180,9 +198,10 @@ def create_app(container: Container | None = None) -> FastAPI:
         )
         result = c.booking_service.commit(commit_request)
         if result.booking is None:
+            status = _error_status_for(result.error_code)
             raise HTTPException(
-                status_code=400,
-                detail={"error": result.error_code, "message": result.error_message},
+                status_code=status,
+                detail=result.error_message,
             )
         return _serialize_booking(result.booking)
 

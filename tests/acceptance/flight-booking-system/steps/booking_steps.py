@@ -267,6 +267,83 @@ def _http_book(client, world: dict, flight_id: str, seat_id: str, name: str, tok
     )
 
 
+@when(parsers.parse('the traveler books flight "{flight_id}" with seat "{seat_id}"'))
+def _http_book_minimal(client, world: dict, flight_id: str, seat_id: str) -> None:
+    """Book with default passenger + payment token — used by seat-validation scenarios.
+
+    The validation logic under test branches on seat identity/status before
+    payment is charged, so the passenger and token values are narrative
+    defaults (never asserted on).
+    """
+    world["response"] = client.post(
+        "/bookings",
+        json={
+            "flightId": flight_id,
+            "seatId": seat_id,
+            "passenger": {"name": "Jane Doe"},
+            "paymentToken": "mock-ok",
+        },
+    )
+
+
+@given(parsers.parse('seat "{seat_id}" is OCCUPIED on flight "{flight_id}"'))
+def _seed_occupied_seat(container, world: dict, seat_id: str, flight_id: str) -> None:
+    """Record a CONFIRMED booking covering ``seat_id`` on ``flight_id``.
+
+    This is the precondition Given: it mutates repository state so that the
+    subsequent commit sees the seat as already booked and rejects with 409.
+    """
+    from flights.domain.model.booking import Booking, BookingStatus
+    from flights.domain.model.ids import BookingReference, QuoteId
+    from flights.domain.model.money import Money
+    from flights.domain.model.passenger import PassengerDetails
+
+    flight = container.flight_repo.get(FlightId(flight_id))
+    if flight is None:
+        raise AssertionError(f"flight {flight_id} not seeded")
+    existing = Booking(
+        reference=BookingReference("BK-PRE-EXISTING"),
+        flight_id=FlightId(flight_id),
+        seat_ids=(SeatId(seat_id),),
+        passengers=(PassengerDetails(full_name="Pre-Existing Passenger"),),
+        total_charged=Money.of("0"),
+        status=BookingStatus.CONFIRMED,
+        quote_id=QuoteId("Q-PRE-EXISTING"),
+        confirmed_at=datetime(2026, 4, 25, 9, 0, tzinfo=UTC),
+    )
+    container.booking_repo.save(existing)
+    world["last_flight_id"] = flight_id
+
+
+@given(parsers.parse('seat "{seat_id}" is BLOCKED for maintenance on flight "{flight_id}"'))
+def _seed_blocked_seat(container, world: dict, seat_id: str, flight_id: str) -> None:
+    """Mutate the cabin so ``seat_id`` has status BLOCKED (not for sale)."""
+    flight = container.flight_repo.get(FlightId(flight_id))
+    if flight is None:
+        raise AssertionError(f"flight {flight_id} not seeded")
+    existing_seat = flight.cabin.seats.get(SeatId(seat_id))
+    if existing_seat is None:
+        raise AssertionError(f"seat {seat_id} not in flight {flight_id} cabin")
+    flight.cabin.seats[existing_seat.id] = Seat(
+        id=existing_seat.id,
+        seat_class=existing_seat.seat_class,
+        kind=existing_seat.kind,
+        status=SeatStatus.BLOCKED,
+    )
+    world["last_flight_id"] = flight_id
+
+
+@then(parsers.parse('the response body cites "{phrase}"'))
+def _assert_body_cites(world: dict, phrase: str) -> None:
+    """Assert ``phrase`` appears somewhere in the response body text.
+
+    Works for both JSON responses (serialised to text) and plain text bodies,
+    so the assertion is tolerant of how the adapter chose to shape the payload.
+    """
+    body_text = world["response"].text
+    assert phrase in body_text, f"expected body to cite {phrase!r}, got: {body_text!r}"
+
+
 @when("the traveler retrieves the booking using its reference")
 def _http_get_booking(client, world: dict) -> None:
     booking_ref = world["response"].json().get("bookingReference")
