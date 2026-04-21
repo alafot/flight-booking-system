@@ -22,6 +22,7 @@ from flights.domain.model.flight import Cabin, Flight
 from flights.domain.model.ids import FlightId, SeatId
 from flights.domain.model.money import Money
 from flights.domain.model.seat import Seat, SeatClass, SeatKind, SeatStatus
+from tests.fixtures.catalog import seeded_catalog
 
 __SCAFFOLD__ = True
 
@@ -60,6 +61,30 @@ def _seed_single_flight(container, world: dict, flight_id: str, origin: str, des
     )
     container.flight_repo.add(flight)
     world["last_flight_id"] = flight_id
+
+
+@given(parsers.parse(
+    "the flight catalog is seeded with {total:d} flights across {routes:d} routes, "
+    "{airlines:d} airlines, {dates:d} dates, {classes:d} classes"
+))
+def _seed_catalog(container, total: int, routes: int, airlines: int, dates: int, classes: int) -> None:
+    """Load the deterministic seeded catalog into the container's flight repo.
+
+    The numeric parameters are minimums — the step asserts the catalog actually
+    meets them so a mis-sized fixture fails loudly.
+    """
+    flights = seeded_catalog()
+    assert len(flights) >= total, f"seeded_catalog() returned {len(flights)} < {total}"
+    unique_routes = {(f.origin, f.destination) for f in flights}
+    assert len(unique_routes) >= routes, f"only {len(unique_routes)} routes"
+    unique_airlines = {f.airline for f in flights}
+    assert len(unique_airlines) >= airlines, f"only {len(unique_airlines)} airlines"
+    unique_dates = {f.departure_at.date() for f in flights}
+    assert len(unique_dates) >= dates, f"only {len(unique_dates)} dates"
+    unique_classes = {seat.seat_class for f in flights for seat in f.cabin.seats.values()}
+    assert len(unique_classes) >= classes, f"only {len(unique_classes)} classes"
+    for flight in flights:
+        container.flight_repo.add(flight)
 
 
 @given(parsers.parse('seat "{seat_id}" in {seat_class} is AVAILABLE on that flight'))
@@ -106,6 +131,34 @@ def _http_get_booking(client, world: dict) -> None:
 def _assert_status(world: dict, status: int) -> None:
     actual = world["response"].status_code
     assert actual == status, f"expected HTTP {status}, got {actual}: {world['response'].text}"
+
+
+@then(parsers.parse(
+    'every returned flight has origin "{origin}", destination "{destination}", '
+    "and departure date {date}"
+))
+def _assert_all_match_filter(world: dict, origin: str, destination: str, date: str) -> None:
+    body = world["response"].json()
+    flights = body.get("flights", [])
+    assert flights, "expected at least one flight in the response"
+    for flight in flights:
+        assert flight["origin"] == origin, f"origin mismatch: {flight['origin']}"
+        assert flight["destination"] == destination, f"destination mismatch: {flight['destination']}"
+        assert flight["departureAt"].startswith(date), (
+            f"departure date mismatch: {flight['departureAt']}"
+        )
+
+
+@then("the response contains zero flights")
+def _assert_zero_flights(world: dict) -> None:
+    body = world["response"].json()
+    assert body.get("flights") == [], f"expected empty flights, got {body.get('flights')!r}"
+
+
+@then(parsers.parse("the pagination metadata reports a total count of {total:d}"))
+def _assert_total_count(world: dict, total: int) -> None:
+    body = world["response"].json()
+    assert body.get("total") == total, f"expected total={total}, got {body.get('total')!r}"
 
 
 @then(parsers.parse('the response body contains the flight "{flight_id}"'))
