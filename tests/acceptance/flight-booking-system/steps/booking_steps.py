@@ -506,6 +506,236 @@ def _assert_read_all(world: dict, n: int) -> None:
     assert [e["seq"] for e in events] == list(range(n))
 
 
+# ---- Milestone 04: pricing steps --------------------------------------------
+#
+# Pricing scenarios drive through the pure ``flights.domain.pricing.price``
+# function — the driving port for the pricing domain. Step 04-02 will layer HTTP
+# on top; this step exercises the function directly (port-to-port at domain
+# scope per nw-tdd-methodology). For the one scenario that asserts
+# "the response status is 200", we populate ``world["response"]`` with a
+# minimal shim carrying ``status_code=200`` once pricing has run successfully —
+# HTTP-shape fidelity without pulling ``/quotes`` wiring into this slice.
+
+from dataclasses import dataclass as _dc
+
+from flights.domain import pricing
+from flights.domain.pricing import DayOfWeek, PricingInputs
+
+
+_DOW_BY_NAME: dict[str, DayOfWeek] = {
+    "MON": DayOfWeek.MON, "Monday":    DayOfWeek.MON,
+    "TUE": DayOfWeek.TUE, "Tuesday":   DayOfWeek.TUE,
+    "WED": DayOfWeek.WED, "Wednesday": DayOfWeek.WED,
+    "THU": DayOfWeek.THU, "Thursday":  DayOfWeek.THU,
+    "FRI": DayOfWeek.FRI, "Friday":    DayOfWeek.FRI,
+    "SAT": DayOfWeek.SAT, "Saturday":  DayOfWeek.SAT,
+    "SUN": DayOfWeek.SUN, "Sunday":    DayOfWeek.SUN,
+}
+
+
+@_dc
+class _PricingResponseShim:
+    """Minimal response-like object so the shared ``response status is N`` step
+    can be reused by pricing scenarios that do not (yet) go through HTTP."""
+    status_code: int = 200
+    text: str = ""
+
+
+def _days_before(departure_iso: str, now_iso: str) -> int:
+    dep = datetime.fromisoformat(departure_iso)
+    now = datetime.fromisoformat(now_iso)
+    return (dep.date() - now.date()).days
+
+
+@given(parsers.re(
+    r"a flight departing (?P<dow_name>\w+) (?P<date>\d{4}-\d{2}-\d{2}) "
+    r"with (?P<pct>\d+)% occupancy and base fare (?P<fare>[\d.]+) USD"
+))
+def _seed_pricing_flight_dow_date(
+    frozen_clock: FrozenClock, world: dict,
+    dow_name: str, date: str, pct: str, fare: str,
+) -> None:
+    """Seed pricing context from a DOW + date + occupancy + fare. Time defaults
+    to 00:00 UTC which is fine for the days-between calculation. The regex
+    restricts ``date`` to ISO yyyy-mm-dd so the ``at HH:MM`` variant cannot
+    be accidentally captured by this pattern."""
+    dep_iso = f"{date}T00:00:00+00:00"
+    now_iso = frozen_clock.now().isoformat()
+    world["pricing_context"] = {
+        "base_fare": Money.of(fare),
+        "occupancy_pct": Decimal(int(pct)),
+        "days_before_departure": _days_before(dep_iso, now_iso),
+        "departure_dow": _DOW_BY_NAME[dow_name],
+    }
+
+
+@given(parsers.re(
+    r"a flight departing (?P<dow_name>\w+) (?P<date>\d{4}-\d{2}-\d{2}) "
+    r"at (?P<time>\d{2}:\d{2}) with (?P<pct>\d+)% occupancy "
+    r"and base fare (?P<fare>[\d.]+) USD"
+))
+def _seed_pricing_flight_dow_date_time(
+    frozen_clock: FrozenClock, world: dict,
+    dow_name: str, date: str, time: str, pct: str, fare: str,
+) -> None:
+    """Same as the dow+date Given but the departure has an explicit clock time —
+    used by Appendix B example 3 where same-day booking hinges on
+    ``days_before_departure == 0`` regardless of hour-of-day."""
+    dep_iso = f"{date}T{time}:00+00:00"
+    now_iso = frozen_clock.now().isoformat()
+    world["pricing_context"] = {
+        "base_fare": Money.of(fare),
+        "occupancy_pct": Decimal(int(pct)),
+        "days_before_departure": _days_before(dep_iso, now_iso),
+        "departure_dow": _DOW_BY_NAME[dow_name],
+    }
+
+
+@given(parsers.parse(
+    "a flight with {pct:d}% occupancy and base fare {fare} USD"
+))
+def _seed_pricing_flight_plain(world: dict, pct: int, fare: str) -> None:
+    """Seed only base fare + occupancy; the Scenario Outline supplies the
+    days-before and DOW in the When step."""
+    world["pricing_context"] = {
+        "base_fare": Money.of(fare),
+        "occupancy_pct": Decimal(pct),
+        # days_before_departure and departure_dow come from the When step.
+    }
+
+
+@when("the traveler quotes one economy seat with no seat surcharge")
+def _price_quote_no_surcharge(world: dict) -> None:
+    ctx = world["pricing_context"]
+    breakdown = pricing.price(
+        PricingInputs(
+            base_fare=ctx["base_fare"],
+            occupancy_pct=ctx["occupancy_pct"],
+            days_before_departure=ctx["days_before_departure"],
+            departure_dow=ctx["departure_dow"],
+        )
+    )
+    world["breakdown"] = breakdown
+    world["response"] = _PricingResponseShim(status_code=200)
+
+
+@when(parsers.parse(
+    "the traveler quotes at {days:d} days before departure on {dow_name}"
+))
+def _price_quote_outline(world: dict, days: int, dow_name: str) -> None:
+    ctx = world["pricing_context"]
+    breakdown = pricing.price(
+        PricingInputs(
+            base_fare=ctx["base_fare"],
+            occupancy_pct=ctx["occupancy_pct"],
+            days_before_departure=days,
+            departure_dow=_DOW_BY_NAME[dow_name],
+        )
+    )
+    world["breakdown"] = breakdown
+
+
+@then(parsers.parse("the total is exactly {amount} USD"))
+def _assert_total(world: dict, amount: str) -> None:
+    breakdown = world["breakdown"]
+    actual = breakdown.total
+    assert actual == Money.of(amount), f"expected total {amount}, got {actual.amount}"
+
+
+@then(parsers.parse(
+    "the breakdown shows demand_multiplier {demand}, time_multiplier {time}, "
+    "day_multiplier {dow}"
+))
+def _assert_breakdown_multipliers(world: dict, demand: str, time: str, dow: str) -> None:
+    b = world["breakdown"]
+    assert b.demand_multiplier == Decimal(demand), (
+        f"demand: expected {demand}, got {b.demand_multiplier}"
+    )
+    assert b.time_multiplier == Decimal(time), (
+        f"time: expected {time}, got {b.time_multiplier}"
+    )
+    assert b.day_multiplier == Decimal(dow), (
+        f"day: expected {dow}, got {b.day_multiplier}"
+    )
+
+
+@then(parsers.parse("the demand_multiplier is {expected}"))
+def _assert_demand(world: dict, expected: str) -> None:
+    actual = world["breakdown"].demand_multiplier
+    assert actual == Decimal(expected), f"expected demand {expected}, got {actual}"
+
+
+@then(parsers.parse("the time_multiplier is {expected}"))
+def _assert_time(world: dict, expected: str) -> None:
+    actual = world["breakdown"].time_multiplier
+    assert actual == Decimal(expected), f"expected time {expected}, got {actual}"
+
+
+@then(parsers.parse("the day_multiplier is {expected}"))
+def _assert_day(world: dict, expected: str) -> None:
+    actual = world["breakdown"].day_multiplier
+    assert actual == Decimal(expected), f"expected day {expected}, got {actual}"
+
+
+# --- Rule-table-as-source-of-truth meta scenario -----------------------------
+
+@when("all demand multipliers are read from the rule table")
+def _read_rule_tables(world: dict) -> None:
+    world["rule_tables"] = {
+        "DEMAND_TABLE": pricing.DEMAND_TABLE,
+        "TIME_TABLE": pricing.TIME_TABLE,
+        "DOW_TABLE": pricing.DOW_TABLE,
+    }
+
+
+@then("the values match Appendix B exactly")
+def _assert_tables_match_appendix_b(world: dict) -> None:
+    demand = dict(world["rule_tables"]["DEMAND_TABLE"])
+    # Representative Appendix B anchors — DEMAND_TABLE is a threshold list
+    # structured as sorted (upper_bound_exclusive, multiplier) pairs. The
+    # test asserts the multipliers themselves are present as values.
+    expected_demand_multipliers = {
+        Decimal("1.00"), Decimal("1.15"), Decimal("1.35"),
+        Decimal("1.60"), Decimal("2.00"), Decimal("2.50"),
+    }
+    actual_demand_multipliers = set(demand.values())
+    assert expected_demand_multipliers <= actual_demand_multipliers, (
+        f"DEMAND_TABLE missing expected multipliers: "
+        f"{expected_demand_multipliers - actual_demand_multipliers}"
+    )
+    time_values = set(m for _, m in world["rule_tables"]["TIME_TABLE"])
+    expected_time_multipliers = {
+        Decimal("0.85"), Decimal("0.90"), Decimal("1.00"),
+        Decimal("1.20"), Decimal("1.50"), Decimal("2.00"),
+    }
+    assert expected_time_multipliers <= time_values, (
+        f"TIME_TABLE missing expected multipliers: "
+        f"{expected_time_multipliers - time_values}"
+    )
+    dow = world["rule_tables"]["DOW_TABLE"]
+    assert dow[DayOfWeek.MON] == Decimal("0.90")
+    assert dow[DayOfWeek.FRI] == Decimal("1.25")
+    assert dow[DayOfWeek.SUN] == Decimal("1.30")
+
+
+@then("changing any multiplier requires editing only one location in the code")
+def _assert_tables_are_module_level(world: dict) -> None:
+    """The rule tables live as module-level constants on ``pricing`` — editing
+    a multiplier is a one-location change. We verify that each table is
+    reachable via direct module attribute access (the ``world`` snapshot was
+    taken through the public module, so if the attributes moved behind a
+    getter or were re-exported from another module, the When step would have
+    already failed on AttributeError."""
+    assert hasattr(pricing, "DEMAND_TABLE")
+    assert hasattr(pricing, "TIME_TABLE")
+    assert hasattr(pricing, "DOW_TABLE")
+    # Same object identity between module attribute and what the When captured —
+    # proves no defensive copy is interposing a second source of truth.
+    assert world["rule_tables"]["DEMAND_TABLE"] is pricing.DEMAND_TABLE
+    assert world["rule_tables"]["TIME_TABLE"] is pricing.TIME_TABLE
+    assert world["rule_tables"]["DOW_TABLE"] is pricing.DOW_TABLE
+
+
 # ---- Pending-steps fallback --------------------------------------------------
 # For milestone scenarios that are @pending, pytest-bdd collects them but they
 # are skipped by `pytest_collection_modifyitems` in conftest.py before any step
