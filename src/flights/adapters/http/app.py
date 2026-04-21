@@ -131,19 +131,20 @@ def create_app(container: Container | None = None) -> FastAPI:
     @app.get("/flights/{flight_id}/seats")
     def get_seats(request: Request, flight_id: str) -> dict:
         c = _container(request)
-        flight = c.flight_repo.get(FlightId(flight_id))
-        if flight is None:
+        entries = c.seat_map_service.view(FlightId(flight_id))
+        if entries is None:
             raise HTTPException(status_code=404, detail="flight not found")
         return {
+            "flightId": flight_id,
             "seats": [
                 {
-                    "seatId": seat.id.value,
-                    "class": seat.seat_class.value,
-                    "kind": seat.kind.value,
-                    "status": seat.status.value,
+                    "seatId": entry.seat_id.value,
+                    "class": entry.seat_class.value,
+                    "kind": entry.kind.value,
+                    "status": entry.status.value,
                 }
-                for seat in flight.cabin.seats.values()
-            ]
+                for entry in entries
+            ],
         }
 
     @app.post("/quotes")

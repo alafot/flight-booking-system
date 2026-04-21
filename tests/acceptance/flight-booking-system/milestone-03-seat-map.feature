@@ -34,7 +34,6 @@ Feature: Milestone 03 — Seat map and seat-specific commit
     Then the response status is 409
     And the response body cites "seat not for sale"
 
-  @pending
   Scenario: Seat map reflects a newly-committed booking
     Given seat "12C" is AVAILABLE on flight "FL-LAX-NYC-0800"
     When the traveler successfully books seat "12C" on that flight

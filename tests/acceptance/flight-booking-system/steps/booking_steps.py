@@ -125,6 +125,25 @@ def _seed_seat(container, world: dict, seat_id: str, seat_class: str) -> None:
     flight.cabin.seats[seat.id] = seat
 
 
+@given(parsers.parse('seat "{seat_id}" is AVAILABLE on flight "{flight_id}"'))
+def _assert_seat_is_available(container, world: dict, seat_id: str, flight_id: str) -> None:
+    """Assert (not seed) that the given seat already exists and is AVAILABLE.
+
+    The Background step seeds the default 30x6 cabin, so every seat in that
+    cabin starts AVAILABLE. This Given is a precondition check rather than a
+    mutation — it pins the narrative in the feature file.
+    """
+    flight = container.flight_repo.get(FlightId(flight_id))
+    if flight is None:
+        raise AssertionError(f"flight {flight_id} not seeded")
+    seat = flight.cabin.seats.get(SeatId(seat_id))
+    if seat is None:
+        raise AssertionError(f"seat {seat_id} not in flight {flight_id} cabin")
+    if seat.status != SeatStatus.AVAILABLE:
+        raise AssertionError(f"seat {seat_id} expected AVAILABLE, got {seat.status}")
+    world["last_flight_id"] = flight_id
+
+
 # ---- Driving adapter steps (HTTP) ------------------------------------------
 
 @when(parsers.parse("the traveler searches flights from {origin} to {destination} on {date}"))
@@ -185,6 +204,29 @@ def _http_get_seat_map(client, world: dict, flight_id: str) -> None:
     world["response"] = client.get(f"/flights/{flight_id}/seats")
 
 
+@when(parsers.parse('the traveler requests the seat map for "{flight_id}"'))
+def _http_get_seat_map_short(client, world: dict, flight_id: str) -> None:
+    world["response"] = client.get(f"/flights/{flight_id}/seats")
+
+
+@when(parsers.parse('the traveler successfully books seat "{seat_id}" on that flight'))
+def _http_successful_book(client, world: dict, seat_id: str) -> None:
+    flight_id = world["last_flight_id"]
+    response = client.post(
+        "/bookings",
+        json={
+            "flightId": flight_id,
+            "seatId": seat_id,
+            "passenger": {"name": "Jane Doe"},
+            "paymentToken": "mock-ok",
+        },
+    )
+    assert response.status_code == 201, (
+        f"expected successful booking (201), got {response.status_code}: {response.text}"
+    )
+    world["last_booking_response"] = response
+
+
 @then(parsers.parse("the response contains {count:d} seats"))
 def _assert_seat_count(world: dict, count: int) -> None:
     body = world["response"].json()
@@ -200,6 +242,16 @@ def _assert_seat_class(world: dict, seat_id: str, seat_class: str) -> None:
     assert match is not None, f"seat {seat_id} not in response"
     actual = match.get("class")
     assert actual == seat_class, f"seat {seat_id}: expected class {seat_class}, got {actual}"
+
+
+@then(parsers.parse('seat "{seat_id}" is reported as OCCUPIED'))
+def _assert_seat_occupied(world: dict, seat_id: str) -> None:
+    body = world["response"].json()
+    seats = body.get("seats", [])
+    match = next((s for s in seats if s.get("seatId") == seat_id), None)
+    assert match is not None, f"seat {seat_id} not in response"
+    actual = match.get("status")
+    assert actual == "OCCUPIED", f"seat {seat_id}: expected OCCUPIED, got {actual}"
 
 
 @when(parsers.parse('the traveler books flight "{flight_id}" with seat "{seat_id}" for passenger "{name}" using payment token "{token}"'))
