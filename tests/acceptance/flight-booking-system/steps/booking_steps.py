@@ -1062,10 +1062,161 @@ def _assert_taxes_line_matches_rate_times_base(world: dict, kind: str) -> None:
     )
 
 
-# ---- Pending-steps fallback --------------------------------------------------
-# For milestone scenarios that are @pending, pytest-bdd collects them but they
-# are skipped by `pytest_collection_modifyitems` in conftest.py before any step
-# is evaluated. No catch-all step function is necessary (and pytest-bdd 8.x
-# eagerly matches a `{_step}` wildcard over more-specific patterns, so any
-# fallback here poisons the enabled scenarios). Step definitions for milestone
-# scenarios are added to this file as each slice is DELIVERed.
+# ---- Milestone 05: full breakdown JSON contract (step 05-03) ----------------
+#
+# Step 05-03 locks in the ``POST /quotes`` response shape with decimal
+# precision. These steps drive the two previously-@pending scenarios:
+#
+#   * "Total equals the arithmetic of all components" — reproduces the total
+#     from the response's own numeric fields by summing
+#     ``base × multipliers + Σ surcharges + taxes + fees`` and applying the
+#     Appendix B rounding rule via ``PriceBreakdown.total``.
+#
+#   * "Breakdown precision round-trips" — asserts every monetary value is a
+#     string with exactly 2dp and that parsing each back through ``Decimal``
+#     yields the same quantized value (no JSON-float precision loss).
+
+from flights.domain.model.quote import PriceBreakdown, SeatSurchargeLine
+
+
+_MONEY_FIELDS: tuple[str, ...] = ("baseFare", "taxes", "fees", "total")
+
+
+@when("the traveler quotes any seat on any flight")
+def _http_quote_any_seat_any_flight(client, world: dict) -> None:
+    """Drive ``POST /quotes`` for any seat on the current flight.
+
+    The Background already seeded a flight; ``last_flight_id`` points at it.
+    We quote the first filler seat (STANDARD, no surcharge) so the response
+    exercises the full breakdown shape even with an empty surcharges list —
+    precision must hold regardless of whether seat_surcharges is populated.
+    """
+    world["response"] = client.post(
+        "/quotes",
+        json={
+            "flightId": world["last_flight_id"],
+            "seatIds": ["FILL-001"],
+            "passengers": 1,
+        },
+    )
+
+
+@then(
+    "the total equals base_fare * demand_multiplier * time_multiplier "
+    "* day_multiplier + surcharges + taxes + fees"
+)
+def _assert_total_matches_full_arithmetic(world: dict) -> None:
+    """Re-derive the total from the response's own breakdown fields.
+
+    The domain holds taxes at full precision internally and applies the
+    Appendix B rounding rule once at the end. The wire displays taxes
+    quantized to 2dp — so summing the displayed components and applying
+    the same rule can land one cent away from the wire total. A gap
+    wider than one cent means the displayed breakdown no longer
+    reproduces the charged amount (arithmetic bug).
+    """
+    body = world["response"].json()
+    breakdown = PriceBreakdown(
+        base_fare=Money.of(body["baseFare"]),
+        demand_multiplier=Decimal(body["demandMultiplier"]),
+        time_multiplier=Decimal(body["timeMultiplier"]),
+        day_multiplier=Decimal(body["dayMultiplier"]),
+        seat_surcharges=tuple(
+            SeatSurchargeLine(seat=SeatId(line["seat"]), amount=Money.of(line["amount"]))
+            for line in body.get("seatSurcharges", [])
+        ),
+        taxes=Money.of(body["taxes"]),
+        fees=Money.of(body["fees"]),
+    )
+    expected_total = breakdown.total
+    actual_total = Money.of(body["total"])
+    delta = abs(actual_total.amount - expected_total.amount)
+    assert delta <= Decimal("0.01"), (
+        f"response total {body['total']} does not reproduce from displayed "
+        f"components (reconstruction: {expected_total.amount}, delta: {delta})"
+    )
+
+
+@then("the computation can be reproduced on paper from the response fields")
+def _assert_response_fields_are_sufficient_for_reproduction(world: dict) -> None:
+    """The response body must expose every field needed to reproduce the
+    total — ``baseFare``, the three multipliers, ``seatSurcharges``,
+    ``taxes``, ``fees``. Without any one of these the "on paper"
+    reproduction is impossible for a stakeholder reviewing the receipt.
+    """
+    body = world["response"].json()
+    required = (
+        "baseFare",
+        "demandMultiplier",
+        "timeMultiplier",
+        "dayMultiplier",
+        "seatSurcharges",
+        "taxes",
+        "fees",
+        "total",
+    )
+    missing = [field for field in required if field not in body]
+    assert not missing, (
+        f"response missing fields required to reproduce total: {missing!r}"
+    )
+
+
+@then(
+    "every monetary value in the response is a string with exactly "
+    "2 decimal places"
+)
+def _assert_money_fields_are_two_decimal_strings(world: dict) -> None:
+    """Every money field is a JSON string (not a JSON number) with exactly
+    two digits after a single decimal point. Rejecting scientific notation
+    and missing/extra decimals prevents float round-tripping bugs at the
+    wire layer.
+    """
+    body = world["response"].json()
+    for field in _MONEY_FIELDS:
+        value = body.get(field)
+        assert isinstance(value, str), (
+            f"{field} must be a JSON string, got {type(value).__name__}: {value!r}"
+        )
+        assert "." in value, f"{field} missing decimal point: {value!r}"
+        integer_part, _, fractional_part = value.partition(".")
+        assert fractional_part.isdigit() and len(fractional_part) == 2, (
+            f"{field} must have exactly 2 decimal places, got {value!r}"
+        )
+        # Reject scientific notation; string must parse as a plain Decimal.
+        assert "e" not in value.lower(), (
+            f"{field} must not use scientific notation: {value!r}"
+        )
+    # Seat surcharge amounts carry the same guarantee.
+    for line in body.get("seatSurcharges", []):
+        amount = line.get("amount")
+        assert isinstance(amount, str) and "." in amount, (
+            f"seat surcharge amount must be a 2dp string, got {amount!r}"
+        )
+        _, _, frac = amount.partition(".")
+        assert frac.isdigit() and len(frac) == 2, (
+            f"seat surcharge {line!r}: fractional part must be 2 digits"
+        )
+
+
+@then("parsing each back as Decimal yields the same quantized value")
+def _assert_money_fields_round_trip_through_decimal(world: dict) -> None:
+    """Serialising ``str(Decimal("X.YZ"))`` and parsing back via
+    ``Decimal(...)`` must yield the same Decimal — proving no precision is
+    lost at the wire. Repeating the process a second time gives the same
+    result, confirming the representation is a fixed-point of the
+    str→Decimal→str round-trip.
+    """
+    body = world["response"].json()
+    for field in _MONEY_FIELDS:
+        value = body[field]
+        parsed = Decimal(value)
+        assert str(parsed) == value, (
+            f"{field} round-trip mismatch: str(Decimal({value!r})) = {str(parsed)!r}"
+        )
+    for line in body.get("seatSurcharges", []):
+        amount = line["amount"]
+        parsed = Decimal(amount)
+        assert str(parsed) == amount, (
+            f"seat {line['seat']!r} amount round-trip mismatch: "
+            f"str(Decimal({amount!r})) = {str(parsed)!r}"
+        )

@@ -25,7 +25,6 @@ Feature: Milestone 05 — Price breakdown with surcharges, taxes, and fees
     When the traveler quotes seat "3A"
     Then the breakdown's seat_surcharges list contains { seat: "3A", amount: 200.00 }
 
-  @pending
   Scenario: Total equals the arithmetic of all components
     Given seat "14A" in Economy has kind "EXIT_ROW"
     When the traveler quotes seat "14A"
@@ -42,7 +41,6 @@ Feature: Milestone 05 — Price breakdown with surcharges, taxes, and fees
     When the traveler quotes one seat on that flight
     Then the taxes line equals the configured international rate times the base
 
-  @pending
   Scenario: Breakdown precision round-trips
     When the traveler quotes any seat on any flight
     Then every monetary value in the response is a string with exactly 2 decimal places

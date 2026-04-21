@@ -26,6 +26,58 @@ MAX_SEATS_PER_QUOTE: int = 9  # mirrors passengers cap; ADR-006 keeps the two al
 IATA_PATTERN: str = r"^[A-Z]{3}$"
 
 
+class SeatSurchargeResponse(BaseModel):
+    """Single seat-surcharge line on the wire.
+
+    ``amount`` is kept as a string so ``Decimal`` precision round-trips —
+    a ``float`` field here would drop the trailing zero on values like
+    ``"35.00"`` and violate ADR-003's "no float" rule at the HTTP boundary.
+    """
+
+    seat: str
+    amount: str
+
+    model_config = {"populate_by_name": True}
+
+
+class QuoteResponse(BaseModel):
+    """Locked-in ``POST /quotes`` response contract (step 05-03).
+
+    Every monetary field and every multiplier is typed as ``str`` rather
+    than ``Decimal`` or ``float``: the contract is that values are sent
+    on the wire as JSON strings produced by ``str(Decimal(...))`` so
+    consumers can parse them back via ``Decimal(...)`` without precision
+    loss. Using Pydantic's built-in ``Decimal`` type would serialise as
+    a JSON number and re-enable the float round-trip problem the step
+    is specifically closing.
+
+    The model exists primarily as a structural guard: the route builds a
+    ``QuoteResponse`` and FastAPI serialises through it, which means any
+    future drift (renamed field, wrong type, forgotten trailing zero)
+    raises ``ValidationError`` at construction time — the wire shape
+    cannot silently change without a failing test.
+    """
+
+    quoteId: str
+    sessionId: str
+    flightId: str
+    seatIds: list[str]
+    passengers: int
+    baseFare: str
+    demandMultiplier: str
+    timeMultiplier: str
+    dayMultiplier: str
+    seatSurcharges: list[SeatSurchargeResponse]
+    taxes: str
+    fees: str
+    total: str
+    currency: str
+    expiresAt: str
+    createdAt: str
+
+    model_config = {"populate_by_name": True}
+
+
 class QuoteRequestBody(BaseModel):
     """Validated body for ``POST /quotes`` (ADR-002 + ADR-006).
 

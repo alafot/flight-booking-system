@@ -16,6 +16,8 @@ from fastapi.responses import JSONResponse
 
 from flights.adapters.http.schemas import (
     QuoteRequestBody,
+    QuoteResponse,
+    SeatSurchargeResponse,
     SearchQueryParams,
     search_query_params,
 )
@@ -100,37 +102,40 @@ def _error_status_for(error_code: str | None) -> int:
 def _serialize_quote(quote: Quote) -> dict:
     """Quote response payload for the HTTP wire (camelCase per API contract).
 
-    Decimals are serialised as strings to preserve precision over JSON and
-    keep the response independent of downstream float conversions.
+    The ``QuoteResponse`` Pydantic model locks the shape in (step 05-03):
+    every money field is a string produced via ``str(Decimal(...))`` so
+    ``Decimal(value)`` round-trips exactly, matching ADR-003's "no float"
+    rule at the HTTP boundary.
 
-    ``taxes`` and ``fees`` carry full Decimal precision internally so that
-    ``PriceBreakdown.total`` can round exactly once at the end (Appendix B
-    rule). For the HTTP wire we project them through ``Money.of`` so the
-    response exposes cent-quantized values — matching the base_fare/total
-    display convention.
+    ``taxes`` and ``fees`` are carried at full Decimal precision in the
+    domain so ``PriceBreakdown.total`` can apply the Appendix B rounding
+    rule once. At the wire we project them through ``Money.of`` to the
+    cent-quantized display value — matching the receipt convention where
+    consumers see line items at 2dp.
     """
     breakdown = quote.price_breakdown
-    return {
-        "quoteId": quote.id.value,
-        "sessionId": quote.session_id.value,
-        "flightId": quote.flight_id.value,
-        "seatIds": [s.value for s in quote.seat_ids],
-        "passengers": quote.passengers,
-        "total": str(breakdown.total.amount),
-        "currency": breakdown.total.currency,
-        "baseFare": str(breakdown.base_fare.amount),
-        "demandMultiplier": str(breakdown.demand_multiplier),
-        "timeMultiplier": str(breakdown.time_multiplier),
-        "dayMultiplier": str(breakdown.day_multiplier),
-        "seatSurcharges": [
-            {"seat": line.seat.value, "amount": str(line.amount.amount)}
+    response = QuoteResponse(
+        quoteId=quote.id.value,
+        sessionId=quote.session_id.value,
+        flightId=quote.flight_id.value,
+        seatIds=[s.value for s in quote.seat_ids],
+        passengers=quote.passengers,
+        baseFare=str(breakdown.base_fare.amount),
+        demandMultiplier=str(breakdown.demand_multiplier),
+        timeMultiplier=str(breakdown.time_multiplier),
+        dayMultiplier=str(breakdown.day_multiplier),
+        seatSurcharges=[
+            SeatSurchargeResponse(seat=line.seat.value, amount=str(line.amount.amount))
             for line in breakdown.seat_surcharges
         ],
-        "taxes": str(Money.of(breakdown.taxes.amount, breakdown.taxes.currency).amount),
-        "fees": str(Money.of(breakdown.fees.amount, breakdown.fees.currency).amount),
-        "createdAt": quote.created_at.isoformat(),
-        "expiresAt": quote.expires_at.isoformat(),
-    }
+        taxes=str(Money.of(breakdown.taxes.amount, breakdown.taxes.currency).amount),
+        fees=str(Money.of(breakdown.fees.amount, breakdown.fees.currency).amount),
+        total=str(breakdown.total.amount),
+        currency=breakdown.total.currency,
+        createdAt=quote.created_at.isoformat(),
+        expiresAt=quote.expires_at.isoformat(),
+    )
+    return response.model_dump(by_alias=True)
 
 
 def _serialize_booking(booking: Booking) -> dict:
