@@ -104,6 +104,51 @@ def _http_search(client, world: dict, origin: str, destination: str, date: str) 
         "/flights/search",
         params={"origin": origin, "destination": destination, "departureDate": date},
     )
+    world["last_search_params"] = {
+        "origin": origin,
+        "destination": destination,
+        "departureDate": date,
+    }
+
+
+@when(parsers.parse(
+    "the traveler searches flights from {origin} to {destination} on {date} requesting page {page:d}"
+))
+def _http_search_with_page(
+    client, world: dict, origin: str, destination: str, date: str, page: int
+) -> None:
+    params = {
+        "origin": origin,
+        "destination": destination,
+        "departureDate": date,
+        "page": page,
+    }
+    world["response"] = client.get("/flights/search", params=params)
+    world["last_search_params"] = {
+        "origin": origin,
+        "destination": destination,
+        "departureDate": date,
+    }
+
+
+@when(parsers.parse("the traveler searches with page size {size:d}"))
+def _http_search_with_size(client, world: dict, size: int) -> None:
+    params = dict(world["last_search_params"])
+    params["size"] = size
+    world["response"] = client.get("/flights/search", params=params)
+
+
+@when(parsers.parse('the traveler searches flights with {field} = "{bad_value}"'))
+def _http_search_invalid_field(client, world: dict, field: str, bad_value: str) -> None:
+    # Start from a baseline of valid params, then overwrite the field under test.
+    params: dict[str, object] = {
+        "origin": "LAX",
+        "destination": "NYC",
+        "departureDate": "2026-06-01",
+        "passengers": 1,
+    }
+    params[field] = bad_value
+    world["response"] = client.get("/flights/search", params=params)
 
 
 @when(parsers.parse('the traveler books flight "{flight_id}" with seat "{seat_id}" for passenger "{name}" using payment token "{token}"'))
@@ -159,6 +204,41 @@ def _assert_zero_flights(world: dict) -> None:
 def _assert_total_count(world: dict, total: int) -> None:
     body = world["response"].json()
     assert body.get("total") == total, f"expected total={total}, got {body.get('total')!r}"
+
+
+@then(parsers.parse("the response contains at most {n:d} flights"))
+def _assert_at_most_n_flights(world: dict, n: int) -> None:
+    body = world["response"].json()
+    flights = body.get("flights", [])
+    assert len(flights) <= n, f"expected at most {n} flights, got {len(flights)}"
+
+
+@then(parsers.parse("the response still contains at most {n:d} flights"))
+def _assert_still_at_most_n_flights(world: dict, n: int) -> None:
+    body = world["response"].json()
+    flights = body.get("flights", [])
+    assert len(flights) <= n, f"expected at most {n} flights, got {len(flights)}"
+
+
+@then("the pagination metadata reports the total count and current page")
+def _assert_pagination_metadata_present(world: dict) -> None:
+    body = world["response"].json()
+    assert "total" in body, f"missing 'total' in pagination metadata: {body!r}"
+    assert "page" in body, f"missing 'page' in pagination metadata: {body!r}"
+    assert "size" in body, f"missing 'size' in pagination metadata: {body!r}"
+    assert isinstance(body["total"], int), f"total must be int, got {type(body['total'])}"
+    assert isinstance(body["page"], int), f"page must be int, got {type(body['page'])}"
+
+
+@then(parsers.parse('the response body lists an error for field "{field}"'))
+def _assert_error_for_field(world: dict, field: str) -> None:
+    body = world["response"].json()
+    errors = body.get("errors")
+    assert isinstance(errors, list), f"expected 'errors' list in body, got {body!r}"
+    fields_reported = [e.get("field") for e in errors]
+    assert field in fields_reported, (
+        f"expected error for field {field!r}, got fields {fields_reported!r}"
+    )
 
 
 @then(parsers.parse('the response body contains the flight "{flight_id}"'))

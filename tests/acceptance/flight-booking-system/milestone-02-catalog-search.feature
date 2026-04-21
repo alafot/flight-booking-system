@@ -12,7 +12,6 @@ Feature: Milestone 02 — Flight catalog and search
     Then the response status is 200
     And every returned flight has origin "LAX", destination "NYC", and departure date 2026-06-01
 
-  @pending
   Scenario: Pagination defaults and maximum
     When the traveler searches flights from LAX to NYC on 2026-06-01 requesting page 1
     Then the response contains at most 20 flights
@@ -20,7 +19,6 @@ Feature: Milestone 02 — Flight catalog and search
     When the traveler searches with page size 50
     Then the response still contains at most 20 flights
 
-  @pending
   Scenario Outline: Invalid input returns 400 with a per-field error
     When the traveler searches flights with <field> = "<bad_value>"
     Then the response status is 400

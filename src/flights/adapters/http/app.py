@@ -8,10 +8,13 @@ dedicated slices.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
+from flights.adapters.http.schemas import SearchQueryParams, search_query_params
 from flights.application.booking_service import CommitRequest
 from flights.application.search_service import SearchRequest
 from flights.domain.model.booking import Booking
@@ -27,6 +30,26 @@ def _container(request: Request) -> Container:
     if container is None:
         raise HTTPException(status_code=500, detail="container not wired")
     return container
+
+
+# Map internal Python field names back to the names the HTTP client sent.
+# FastAPI reports the query parameter name in ``loc`` (e.g. ``("query", "departureDate")``
+# for the route dependency), but the nested ``SearchQueryParams`` validator
+# reports the model attribute (e.g. ``departure_date``). Normalise both.
+_FIELD_NAME_ON_WIRE: dict[str, str] = {
+    "departure_date": "departureDate",
+    "seat_class": "class",
+    "class_": "class",
+}
+
+
+def _extract_field_name(loc: tuple[Any, ...] | list[Any]) -> str:
+    # ``loc`` is a path like ``("query", "origin")`` or ``("body", "departure_date")``.
+    # The last segment identifies the offending field.
+    if not loc:
+        return ""
+    last = str(loc[-1])
+    return _FIELD_NAME_ON_WIRE.get(last, last)
 
 
 def _serialize_flight(flight: Any) -> dict:
@@ -65,23 +88,41 @@ def create_app(container: Container | None = None) -> FastAPI:
     app = FastAPI(title="Flight Booking System", version="0.0.1")
     app.state.container = container
 
+    @app.exception_handler(RequestValidationError)
+    def _validation_error_to_400(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # FastAPI defaults to 422; our API contract uses 400 with a per-field list.
+        errors = [
+            {
+                "field": _extract_field_name(err.get("loc", ())),
+                "message": err.get("msg", ""),
+            }
+            for err in exc.errors()
+        ]
+        return JSONResponse(status_code=400, content={"errors": errors})
+
     @app.get("/flights/search")
     def search_flights(
         request: Request,
-        origin: str,
-        destination: str,
-        departureDate: str,  # noqa: N803 — JSON camelCase at the boundary
+        params: Annotated[SearchQueryParams, Depends(search_query_params)],
     ) -> dict:
         c = _container(request)
         result = c.search_service.search(
             SearchRequest(
-                origin=origin,
-                destination=destination,
-                departure_date=departureDate,
+                origin=params.origin,
+                destination=params.destination,
+                departure_date=params.departure_date.isoformat(),
+                passengers=params.passengers,
+                page=params.page,
+                size=params.size,
             )
         )
+        start = (result.page - 1) * result.size
+        end = start + result.size
+        page_flights = result.flights[start:end]
         return {
-            "flights": [_serialize_flight(f) for f in result.flights],
+            "flights": [_serialize_flight(f) for f in page_flights],
             "page": result.page,
             "size": result.size,
             "total": result.total,
