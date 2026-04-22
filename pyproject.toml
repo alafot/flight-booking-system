@@ -7,7 +7,7 @@ name = "flights"
 version = "0.0.1"
 description = "Flight Booking System — nWave reference implementation"
 readme = "CLAUDE.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.115",
     "pydantic>=2.5",
@@ -36,7 +36,7 @@ markers = [
     "real_io: exercises real adapters (real HTTP, real files under tmp_path)",
     "in_memory: uses InMemory doubles only",
     "adapter_integration: dedicated driven-adapter integration test",
-    "pending: scenario is written but not yet enabled; DELIVER enables one at a time",
+    "pending: scenario is written but not yet enabled",
     "requires_external: needs an external system; skipped if absent",
     "driving_adapter: invokes the user-facing entry point via its real protocol",
     "kpi: scenario maps to an outcome KPI",
@@ -44,8 +44,8 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 exclude = ["tests/acceptance/flight-booking-system/"]

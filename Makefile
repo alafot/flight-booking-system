@@ -1,4 +1,4 @@
-.PHONY: build dev_install test lint format
+.PHONY: install test lint format
 
 PYTHON ?= python
 VENV   ?= .venv
@@ -8,11 +8,9 @@ PY     := $(VENV)/bin/python
 $(VENV):
 	$(PYTHON) -m venv $(VENV)
 
-build: $(VENV)
+install: $(VENV)
 	$(PIP) install -U pip
 	$(PIP) install -e '.[dev]'
-
-dev_install: build
 	$(VENV)/bin/pre-commit install
 
 test:

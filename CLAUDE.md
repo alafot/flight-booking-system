@@ -1,6 +1,6 @@
 # flight-booking-system — Claude Code project context
 
-Python backend implementing the spec at `Flight-Booking-System.pdf`. Developed under nWave methodology; artifacts live in `docs/product/` (SSOT) and `docs/feature/flight-booking-system/` (feature delta).
+Python backend. Developed under nWave methodology; artifacts live in `docs/product/` (SSOT) and `docs/feature/flight-booking-system/` (feature delta).
 
 ## Development Paradigm
 
@@ -25,7 +25,7 @@ SSOT: `docs/product/architecture/brief.md` + `adr-*.md`.
 
 ## Key constraints
 
-- Python 3.12, FastAPI, Pydantic v2, `decimal.Decimal` with `ROUND_HALF_EVEN`.
+- Python 3.14, FastAPI, Pydantic v2, `decimal.Decimal` with `ROUND_HALF_EVEN`.
 - Domain imports zero I/O modules (enforced).
 - No `datetime.now()` or `float` in `domain/` — clocks and money are injected.
 - In-memory persistence with `threading.RLock`. Single process, no distributed locking.
@@ -49,11 +49,3 @@ python scripts/race_last_seat.py
 # Load tests (KPI-P1/P2/P3)
 locust -f tests/load/locustfile.py --headless -u 50 -r 10 -t 1m
 ```
-
-## Wave status
-
-- [x] DISCUSS — `docs/feature/flight-booking-system/discuss/`
-- [x] DESIGN — `docs/product/architecture/` + `docs/feature/flight-booking-system/design/`
-- [ ] DEVOPS
-- [ ] DISTILL
-- [ ] DELIVER
