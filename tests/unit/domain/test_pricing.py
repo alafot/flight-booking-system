@@ -160,9 +160,7 @@ class TestDayOfWeekMultipliers:
             (DayOfWeek.SUN, Decimal("1.30")),
         ],
     )
-    def test_day_multiplier_matches_appendix_b(
-        self, dow: DayOfWeek, expected: Decimal
-    ) -> None:
+    def test_day_multiplier_matches_appendix_b(self, dow: DayOfWeek, expected: Decimal) -> None:
         breakdown = price(
             PricingInputs(
                 base_fare=Money.of("100"),

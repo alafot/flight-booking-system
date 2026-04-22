@@ -163,9 +163,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Race-last-seat harness (KPI-T2 — zero double-bookings).",
     )
     parser.add_argument("--trials", type=int, default=100, help="number of trials (default 100)")
-    parser.add_argument(
-        "--threads", type=int, default=10, help="threads per trial (default 10)"
-    )
+    parser.add_argument("--threads", type=int, default=10, help="threads per trial (default 10)")
     return parser.parse_args(argv)
 
 

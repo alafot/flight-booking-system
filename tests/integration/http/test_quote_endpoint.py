@@ -22,6 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flights.adapters.http.app import create_app
+from flights.adapters.mocks.audit import InMemoryAuditLog
 from flights.composition.wire import Container, build_test_container
 from flights.domain.model.flight import Cabin, Flight
 from flights.domain.model.ids import FlightId, SeatId
@@ -151,9 +152,7 @@ class TestQuoteEndpointAppendixB:
 class TestQuoteEndpointAuditEvent:
     def test_quote_endpoint_writes_quote_created_audit_event(self) -> None:
         now = datetime(2026, 5, 3, 10, 0, tzinfo=UTC)
-        container = build_test_container(
-            now=now, audit_path=None, deterministic_ids=True
-        )
+        container = build_test_container(now=now, audit_path=None, deterministic_ids=True)
         _seed_flight(
             container,
             flight_id="FL-AUDIT",
@@ -171,6 +170,7 @@ class TestQuoteEndpointAuditEvent:
         assert response.status_code == 200, response.text
 
         # Audit log contract for Phase 06 replay:
+        assert isinstance(container.audit, InMemoryAuditLog)
         events = [e for e in container.audit.events if e.get("type") == "QuoteCreated"]
         assert len(events) == 1
         event = events[0]
@@ -193,9 +193,7 @@ class TestQuoteEndpointAuditEvent:
 class TestQuoteEndpointErrorBranches:
     def test_quote_endpoint_for_unknown_flight_returns_404(self) -> None:
         now = datetime(2026, 5, 3, 10, 0, tzinfo=UTC)
-        container = build_test_container(
-            now=now, audit_path=None, deterministic_ids=True
-        )
+        container = build_test_container(now=now, audit_path=None, deterministic_ids=True)
         client = TestClient(create_app(container=container))
 
         response = client.post(
@@ -211,9 +209,7 @@ class TestQuoteEndpointErrorBranches:
 
     def test_quote_endpoint_for_already_departed_flight_returns_400(self) -> None:
         now = datetime(2026, 6, 3, 10, 0, tzinfo=UTC)  # one day AFTER departure
-        container = build_test_container(
-            now=now, audit_path=None, deterministic_ids=True
-        )
+        container = build_test_container(now=now, audit_path=None, deterministic_ids=True)
         _seed_flight(
             container,
             flight_id="FL-DEPARTED",

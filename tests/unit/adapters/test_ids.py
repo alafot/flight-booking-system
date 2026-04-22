@@ -5,7 +5,7 @@ UuidIdGenerator is out of scope for step 01-02 (production-path, wired in 01-03+
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable, cast
 
 import pytest
 
@@ -40,10 +40,13 @@ class TestDeterministicIdGeneratorSequences:
         expected_first: object,
         expected_second: object,
     ) -> None:
-        gen = DeterministicIdGenerator(**{kwarg: (
-            expected_first.value if hasattr(expected_first, "value") else expected_first,
-            expected_second.value if hasattr(expected_second, "value") else expected_second,
-        )})
+        first = cast(
+            Any, expected_first.value if hasattr(expected_first, "value") else expected_first
+        )
+        second = cast(
+            Any, expected_second.value if hasattr(expected_second, "value") else expected_second
+        )
+        gen = DeterministicIdGenerator(**{kwarg: (first, second)})
         method: Callable[[], object] = getattr(gen, method_name)
 
         assert method() == expected_first

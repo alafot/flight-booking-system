@@ -220,9 +220,7 @@ def create_app(container: Container | None = None) -> FastAPI:
     app.state.container = container
 
     @app.exception_handler(RequestValidationError)
-    def _validation_error_to_400(
-        _request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
+    def _validation_error_to_400(_request: Request, exc: RequestValidationError) -> JSONResponse:
         # FastAPI defaults to 422; our API contract uses 400 with a per-field list.
         errors = [
             {
@@ -272,12 +270,15 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     @app.get("/flights/{flight_id}/seats")
     def get_seats(
-        request: Request, flight_id: str, sessionId: str | None = None,  # noqa: N803 — camelCase at wire
+        request: Request,
+        flight_id: str,
+        sessionId: str | None = None,  # noqa: N803 — camelCase at wire
     ) -> dict:
         c = _container(request)
         requesting_session = SessionId(sessionId) if sessionId else None
         entries = c.seat_map_service.view(
-            FlightId(flight_id), session_id=requesting_session,
+            FlightId(flight_id),
+            session_id=requesting_session,
         )
         if entries is None:
             raise HTTPException(status_code=404, detail="flight not found")
@@ -301,9 +302,7 @@ def create_app(container: Container | None = None) -> FastAPI:
             flight_id=FlightId(payload.flight_id),
             seat_ids=tuple(SeatId(s) for s in payload.seat_ids),
             passengers=payload.passengers,
-            session_id=(
-                SessionId(payload.session_id) if payload.session_id is not None else None
-            ),
+            session_id=(SessionId(payload.session_id) if payload.session_id is not None else None),
         )
         try:
             quote = c.quote_service.quote(quote_request)
@@ -315,7 +314,8 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     @app.post("/seat-locks", status_code=201)
     def post_seat_lock(
-        request: Request, payload: SeatLockRequestBody,
+        request: Request,
+        payload: SeatLockRequestBody,
     ) -> JSONResponse:
         """Acquire a 10-minute seat lock for a session (step 07-01).
 

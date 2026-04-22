@@ -41,12 +41,10 @@ def test_harness_returns_perfect_run_for_100_trials() -> None:
 
     assert summary["trials"] == 100
     assert summary["total_winners"] == 100, (
-        f"expected 100 winners (one per trial), got {summary['total_winners']}: "
-        f"{summary!r}"
+        f"expected 100 winners (one per trial), got {summary['total_winners']}: {summary!r}"
     )
     assert summary["total_rejected"] == 900, (
-        f"expected 900 rejections (9 per trial), got {summary['total_rejected']}: "
-        f"{summary!r}"
+        f"expected 900 rejections (9 per trial), got {summary['total_rejected']}: {summary!r}"
     )
     assert summary["double_bookings"] == 0, (
         f"KPI-T2 violation: {summary['double_bookings']} trial(s) produced "

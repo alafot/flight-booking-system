@@ -79,12 +79,18 @@ class TestRoundTripPairing:
         outbound_dep = datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
         return_ok_dep = datetime(2026, 6, 8, 14, 0, tzinfo=UTC)
         _add_flight(
-            container, flight_id="OUT-1",
-            origin="LAX", destination="NYC", departure=outbound_dep,
+            container,
+            flight_id="OUT-1",
+            origin="LAX",
+            destination="NYC",
+            departure=outbound_dep,
         )
         _add_flight(
-            container, flight_id="RET-OK",
-            origin="NYC", destination="LAX", departure=return_ok_dep,
+            container,
+            flight_id="RET-OK",
+            origin="NYC",
+            destination="LAX",
+            departure=return_ok_dep,
         )
 
         response = client.get(
@@ -120,16 +126,25 @@ class TestRoundTripPairing:
         return_too_close = datetime(2026, 6, 1, 14, 0, tzinfo=UTC)
         return_ok = datetime(2026, 6, 1, 15, 30, tzinfo=UTC)
         _add_flight(
-            container, flight_id="OUT-1",
-            origin="LAX", destination="NYC", departure=outbound_dep,
+            container,
+            flight_id="OUT-1",
+            origin="LAX",
+            destination="NYC",
+            departure=outbound_dep,
         )
         _add_flight(
-            container, flight_id="RET-TOO-CLOSE",
-            origin="NYC", destination="LAX", departure=return_too_close,
+            container,
+            flight_id="RET-TOO-CLOSE",
+            origin="NYC",
+            destination="LAX",
+            departure=return_too_close,
         )
         _add_flight(
-            container, flight_id="RET-OK",
-            origin="NYC", destination="LAX", departure=return_ok,
+            container,
+            flight_id="RET-OK",
+            origin="NYC",
+            destination="LAX",
+            departure=return_ok,
         )
 
         response = client.get(
@@ -144,27 +159,27 @@ class TestRoundTripPairing:
 
         assert response.status_code == 200
         body = response.json()
-        assert body["pairCount"] == 1, (
-            f"only RET-OK should pair, got {body['pairs']!r}"
-        )
+        assert body["pairCount"] == 1, f"only RET-OK should pair, got {body['pairs']!r}"
         assert body["pairs"][0]["return"]["id"] == "RET-OK"
 
-    def test_round_trip_pagination_by_pairs(
-        self, client: TestClient, container: Container
-    ) -> None:
+    def test_round_trip_pagination_by_pairs(self, client: TestClient, container: Container) -> None:
         # 25 outbounds × 1 matching return-each (one-to-one by minute offset
         # on the return side, all sharing a buffer-safe departure window).
         outbound_base = datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
         return_base = datetime(2026, 6, 8, 16, 0, tzinfo=UTC)  # 3h after arrivals
         for i in range(25):
             _add_flight(
-                container, flight_id=f"OUT-{i:03d}",
-                origin="LAX", destination="NYC",
+                container,
+                flight_id=f"OUT-{i:03d}",
+                origin="LAX",
+                destination="NYC",
                 departure=outbound_base + timedelta(minutes=i),
             )
             _add_flight(
-                container, flight_id=f"RET-{i:03d}",
-                origin="NYC", destination="LAX",
+                container,
+                flight_id=f"RET-{i:03d}",
+                origin="NYC",
+                destination="LAX",
                 departure=return_base + timedelta(minutes=i),
             )
 
@@ -198,8 +213,11 @@ class TestRoundTripPairing:
         # is preserved when no returnDate is supplied.
         outbound_dep = datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
         _add_flight(
-            container, flight_id="OUT-1",
-            origin="LAX", destination="NYC", departure=outbound_dep,
+            container,
+            flight_id="OUT-1",
+            origin="LAX",
+            destination="NYC",
+            departure=outbound_dep,
         )
 
         response = client.get(

@@ -159,9 +159,7 @@ class BookingService:
                     {
                         "type": "PaymentFailed",
                         "quote_id": (
-                            request.quote_id.value
-                            if request.quote_id is not None
-                            else None
+                            request.quote_id.value if request.quote_id is not None else None
                         ),
                         "flight_id": request.flight_id.value,
                         "seat_ids": [s.value for s in request.seat_ids],
@@ -181,9 +179,7 @@ class BookingService:
             # commit consumed a quote. The "Q000-WS" sentinel is the
             # walking-skeleton path (no quote) — audit replay skips it.
             quote_id = (
-                quote_lookup.quote.id
-                if quote_lookup.quote is not None
-                else QuoteId("Q000-WS")
+                quote_lookup.quote.id if quote_lookup.quote is not None else QuoteId("Q000-WS")
             )
             booking = Booking(
                 reference=reference,
@@ -228,9 +224,7 @@ class BookingService:
     def get(self, reference: BookingReference) -> Booking | None:
         return self._bookings.get(reference)
 
-    def _resolve_quote(
-        self, quote_id: QuoteId | None, now: datetime
-    ) -> _QuoteLookup:
+    def _resolve_quote(self, quote_id: QuoteId | None, now: datetime) -> _QuoteLookup:
         """Look up the request's quote and classify the three possible states.
 
         * No quote_id supplied → empty lookup (walking-skeleton path).
@@ -266,9 +260,7 @@ class BookingService:
             )
         )
 
-    def _validate_seats(
-        self, flight: "object", request: CommitRequest
-    ) -> CommitResult | None:
+    def _validate_seats(self, flight: "object", request: CommitRequest) -> CommitResult | None:
         """Validate every requested seat against the cabin and current bookings.
 
         Returns a ``CommitResult`` with the appropriate error code on the first
@@ -309,9 +301,7 @@ class BookingService:
                 return True
         return False
 
-    def _validate_lock(
-        self, request: CommitRequest, now: datetime
-    ) -> CommitResult | None:
+    def _validate_lock(self, request: CommitRequest, now: datetime) -> CommitResult | None:
         """Validate ``request.lock_id`` against the store (ADR-008).
 
         Mirrors the 410-vs-404 idiom used for quotes: call ``is_valid``
@@ -341,15 +331,15 @@ class BookingService:
             error_message=f"seat lock expired: {request.lock_id}",
         )
 
-    def _check_lock_session_ownership(
-        self, request: CommitRequest
-    ) -> CommitResult | None:
+    def _check_lock_session_ownership(self, request: CommitRequest) -> CommitResult | None:
         """Enforce that the commit's session owns the referenced lock.
 
         Split out from :meth:`_validate_lock` so the TTL branch stays
         single-purpose (only emits LOCK_EXPIRED / LOCK_NOT_FOUND) and the
         ownership branch reads as its own policy check.
         """
+        if request.lock_id is None:
+            return None
         raw = self._locks.get(request.lock_id)
         if raw is None:
             return None

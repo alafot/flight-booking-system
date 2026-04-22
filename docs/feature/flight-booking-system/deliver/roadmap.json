@@ -1,0 +1,497 @@
+{
+  "roadmap": {
+    "project_id": "flight-booking-system",
+    "created_at": "2026-04-21T19:00:41Z",
+    "total_steps": 21,
+    "phases": 8,
+    "goal": "Implement the flight-booking-system feature end-to-end across 8 elephant-carpaccio slices per DISTILL artifacts.",
+    "paradigm": "object-oriented",
+    "crafter": "nw-software-crafter (substituted with alf-atdd-developer for this orchestration)",
+    "methodology": "Red-Green-Refactor (5-phase TDD) with walking skeleton first"
+  },
+  "phases": [
+    {
+      "id": "01",
+      "name": "Slice 01 — Walking Skeleton (one end-to-end booking via real HTTP)",
+      "slice": "slice-01-walking-skeleton",
+      "steps": [
+        {
+          "id": "01-01",
+          "name": "Money value object and domain-model constructors with Decimal arithmetic",
+          "criteria": [
+            "Money.of('299') returns Decimal('299.00') quantized to 2dp with ROUND_HALF_EVEN.",
+            "Money equality is value-based; Money + Money and Money * Decimal return new Money.",
+            "Flight, Cabin, Seat, Booking, Quote, PriceBreakdown, PassengerDetails dataclass constructors accept the values used by the walking-skeleton @given background step without raising.",
+            "__SCAFFOLD__ marker removed from money.py."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/walking-skeleton.feature",
+          "scenario_name": "Search, book, retrieve — end-to-end through HTTP",
+          "files_to_modify": [
+            "src/flights/domain/model/money.py",
+            "src/flights/domain/model/flight.py",
+            "src/flights/domain/model/quote.py",
+            "src/flights/domain/model/booking.py",
+            "tests/unit/domain/test_money.py"
+          ],
+          "dependencies": [],
+          "estimated_hours": 1.0
+        },
+        {
+          "id": "01-02",
+          "name": "In-memory adapters, mock payment/email/audit, composition root for tests",
+          "criteria": [
+            "InMemoryFlightRepository.add and .get are functional; .search returns matches for origin/destination/departure-date.",
+            "InMemoryBookingRepository.save and .get round-trip a Booking.",
+            "MockPaymentGateway.charge(token='mock-ok', amount) returns succeeded=True; token='fail' returns succeeded=False.",
+            "MockEmailSender.queue_confirmation appends to .queued list.",
+            "InMemoryAuditLog.write appends to .events list.",
+            "build_test_container(now, audit_path=None, deterministic_ids=True) returns a wired Container with all services; no __SCAFFOLD__ remaining in those adapter files or wire.py."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/walking-skeleton.feature",
+          "scenario_name": "Search, book, retrieve — end-to-end through HTTP",
+          "files_to_modify": [
+            "src/flights/adapters/inmemory/flight_repository.py",
+            "src/flights/adapters/inmemory/booking_repository.py",
+            "src/flights/adapters/mocks/payment.py",
+            "src/flights/adapters/mocks/email.py",
+            "src/flights/adapters/mocks/audit.py",
+            "src/flights/adapters/mocks/ids.py",
+            "src/flights/composition/wire.py",
+            "tests/unit/composition/test_wire.py"
+          ],
+          "dependencies": ["01-01"],
+          "estimated_hours": 1.5
+        },
+        {
+          "id": "01-03",
+          "name": "FastAPI search + book + get-booking routes turning the WS scenario GREEN",
+          "criteria": [
+            "GET /flights/search returns 200 with matching flights; walking-skeleton scenario step assert on flight id passes.",
+            "POST /bookings with valid body returns 201 with a bookingReference and status='CONFIRMED'.",
+            "GET /bookings/{reference} returns 200 with flightId and seats list.",
+            "Confirmation email is queued; audit log receives a BookingCommitted event.",
+            "Running `pytest -m walking_skeleton` is GREEN.",
+            "JsonlAuditLog adapter-integration scenario also passes (writes 3 events to tmp_path, reads back 3 events)."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/walking-skeleton.feature",
+          "scenario_name": "Search, book, retrieve — end-to-end through HTTP",
+          "files_to_modify": [
+            "src/flights/adapters/http/app.py",
+            "src/flights/application/search_service.py",
+            "src/flights/application/booking_service.py",
+            "src/flights/adapters/mocks/audit.py",
+            "tests/integration/http/test_booking_flow.py"
+          ],
+          "dependencies": ["01-02"],
+          "estimated_hours": 2.0
+        }
+      ]
+    },
+    {
+      "id": "02",
+      "name": "Slice 02 — Flight catalog search with pagination and validation",
+      "slice": "slice-02-flight-catalog-search",
+      "steps": [
+        {
+          "id": "02-01",
+          "name": "Seed a realistic catalog (200+ flights, 20 routes, 5 airlines) and filter by origin/destination/date",
+          "criteria": [
+            "A seeded catalog provides ≥200 flights across ≥20 routes, ≥5 airlines, ≥30 dates, 3 classes.",
+            "GET /flights/search?origin=LAX&destination=NYC&departureDate=2026-06-01 returns only matching flights.",
+            "An empty match returns 200 with an empty results array and pagination metadata total=0."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-02-catalog-search.feature",
+          "scenario_name": "Filter by origin, destination, and departure date",
+          "files_to_modify": [
+            "src/flights/adapters/inmemory/flight_repository.py",
+            "tests/fixtures/catalog.py",
+            "src/flights/application/search_service.py",
+            "src/flights/adapters/http/app.py"
+          ],
+          "dependencies": ["01-03"],
+          "estimated_hours": 1.5
+        },
+        {
+          "id": "02-02",
+          "name": "Pagination defaults + max + input validation (per-field 400 errors)",
+          "criteria": [
+            "Page size defaults to 20; size>20 is clamped to 20.",
+            "Invalid IATA, invalid date, passengers outside 1..9, unknown class enum each produce a 400 with a per-field error list.",
+            "p95 of 100 sequential searches on the seeded catalog is under 500ms."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-02-catalog-search.feature",
+          "scenario_name": "Pagination defaults and maximum",
+          "files_to_modify": [
+            "src/flights/adapters/http/app.py",
+            "src/flights/adapters/http/schemas.py",
+            "tests/integration/http/test_search_validation.py"
+          ],
+          "dependencies": ["02-01"],
+          "estimated_hours": 1.5
+        }
+      ]
+    },
+    {
+      "id": "03",
+      "name": "Slice 03 — Seat map and seat-specific commit",
+      "slice": "slice-03-seat-map-and-commit",
+      "steps": [
+        {
+          "id": "03-01",
+          "name": "Default 30x6 cabin fixture with class/kind per seat (ADR-004)",
+          "criteria": [
+            "Default cabin factory builds 180 seats (30 rows × 6 columns A-F).",
+            "Rows 1-2 are FIRST, rows 3-6 are BUSINESS, rows 7-30 are ECONOMY.",
+            "Row 14 is marked EXIT_ROW; B/E seats are MIDDLE across Economy; row 3 A/F are WINDOW_SUITE.",
+            "Seat map assertion in milestone-03 scenario 'Seat map returns 180 seats with correct class assignment' passes."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-03-seat-map.feature",
+          "scenario_name": "Seat map returns 180 seats with correct class assignment",
+          "files_to_modify": [
+            "src/flights/domain/model/seat.py",
+            "src/flights/domain/model/flight.py",
+            "tests/fixtures/cabin.py",
+            "tests/unit/domain/test_cabin.py"
+          ],
+          "dependencies": ["02-02"],
+          "estimated_hours": 1.0
+        },
+        {
+          "id": "03-02",
+          "name": "GET /flights/{id}/seats endpoint + SeatMapService composing flight, bookings, locks",
+          "criteria": [
+            "GET /flights/{id}/seats returns 180 entries with seatId, class, kind, status.",
+            "After a successful booking of '12C', a subsequent seat-map GET shows '12C' as OCCUPIED.",
+            "Flight-not-found → 404."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-03-seat-map.feature",
+          "scenario_name": "Seat map reflects a newly-committed booking",
+          "files_to_modify": [
+            "src/flights/application/seat_map_service.py",
+            "src/flights/adapters/http/app.py",
+            "src/flights/adapters/http/schemas.py"
+          ],
+          "dependencies": ["03-01"],
+          "estimated_hours": 1.0
+        },
+        {
+          "id": "03-03",
+          "name": "Seat validation on commit (unknown, OCCUPIED, BLOCKED)",
+          "criteria": [
+            "POST /bookings with a non-existent seatId → 400 with 'unknown seat'.",
+            "POST /bookings with OCCUPIED seat → 409 'seat already booked'.",
+            "POST /bookings with BLOCKED seat → 409 'seat not for sale'.",
+            "All three milestone-03 error scenarios pass."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-03-seat-map.feature",
+          "scenario_name": "Booking a non-existent seat",
+          "files_to_modify": [
+            "src/flights/application/booking_service.py",
+            "src/flights/adapters/http/app.py"
+          ],
+          "dependencies": ["03-02"],
+          "estimated_hours": 1.0
+        }
+      ]
+    },
+    {
+      "id": "04",
+      "name": "Slice 04 — Dynamic pricing engine (Appendix B)",
+      "slice": "slice-04-dynamic-pricing-engine",
+      "steps": [
+        {
+          "id": "04-01",
+          "name": "Pure pricing function with Appendix B tables (demand × time × day)",
+          "criteria": [
+            "pricing.price(PricingInputs(base=299, occupancy=0, days=30, dow=TUE, surcharges=(), taxes=0, fees=0)) yields total=228.74 USD.",
+            "Appendix B example 2 yields 897.00 USD; example 3 yields 1944.00 USD (banker's rounding at the end).",
+            "hypothesis property test (≥1000 cases) confirms: positive totals, same-inputs→same-output, clock not referenced.",
+            "Boundary inputs (0/30/31%; 60/21-day cutoffs; each weekday) land in the correct bucket.",
+            "DEMAND_TABLE, TIME_TABLE, DOW_TABLE are module-level constants; changing a multiplier requires editing exactly one location."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-04-dynamic-pricing.feature",
+          "scenario_name": "Appendix B example 1 — empty Tuesday flight, 30 days ahead",
+          "files_to_modify": [
+            "src/flights/domain/pricing.py",
+            "tests/unit/domain/test_pricing.py",
+            "tests/unit/domain/test_pricing_properties.py"
+          ],
+          "dependencies": ["03-03"],
+          "estimated_hours": 2.5
+        },
+        {
+          "id": "04-02",
+          "name": "Wire pricing into POST /quotes with demand/time/day context from flight state",
+          "criteria": [
+            "POST /quotes returns baseFare, demandMultiplier, timeMultiplier, dayMultiplier, and total in the response body.",
+            "All three Appendix B example scenarios go GREEN with the exact documented totals.",
+            "Occupancy is computed from the flight's current (seats + bookings + active locks) state."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-04-dynamic-pricing.feature",
+          "scenario_name": "Appendix B example 2 — 80% full Friday flight, 2 days ahead",
+          "files_to_modify": [
+            "src/flights/application/quote_service.py",
+            "src/flights/adapters/http/app.py",
+            "src/flights/adapters/http/schemas.py"
+          ],
+          "dependencies": ["04-01"],
+          "estimated_hours": 1.5
+        }
+      ]
+    },
+    {
+      "id": "05",
+      "name": "Slice 05 — Price breakdown with surcharges, taxes, and fees (Appendix A)",
+      "slice": "slice-05-surcharges-taxes-fees",
+      "steps": [
+        {
+          "id": "05-01",
+          "name": "Appendix A surcharge table — (class, kind) → Money lookup",
+          "criteria": [
+            "SURCHARGES[(ECONOMY, EXIT_ROW)] == +35.00 USD; (ECONOMY, MIDDLE) == -5.00 USD; (BUSINESS, LIE_FLAT_SUITE) == +200.00 USD (three example rows cited — full table must be present).",
+            "Adding a seat in quote returns a seat_surcharges list entry for each seat.",
+            "milestone-05 scenarios for exit row, middle seat, lie-flat-suite all pass."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-05-price-breakdown.feature",
+          "scenario_name": "Exit row economy seat surcharge (+$35)",
+          "files_to_modify": [
+            "src/flights/domain/pricing.py",
+            "tests/unit/domain/test_pricing_surcharges.py"
+          ],
+          "dependencies": ["04-02"],
+          "estimated_hours": 1.0
+        },
+        {
+          "id": "05-02",
+          "name": "Domestic vs international taxes + baggage/meal fees",
+          "criteria": [
+            "Flight carries a route_kind (domestic|international); taxes line equals configured rate × base.",
+            "Fees line includes baggage/meal/seat-selection fees per configurable table (this iteration: flat rates only).",
+            "Domestic and international scenarios in milestone-05 both pass."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-05-price-breakdown.feature",
+          "scenario_name": "Domestic vs international tax rates",
+          "files_to_modify": [
+            "src/flights/domain/pricing.py",
+            "src/flights/domain/model/flight.py",
+            "tests/fixtures/catalog.py"
+          ],
+          "dependencies": ["05-01"],
+          "estimated_hours": 1.0
+        },
+        {
+          "id": "05-03",
+          "name": "Full price breakdown JSON (precision round-trips; total reproducible on paper)",
+          "criteria": [
+            "Quote response body has baseFare, demandMultiplier, timeMultiplier, dayMultiplier, seatSurcharges[], taxes, fees, total, currency.",
+            "Every monetary value is a 2-decimal-place string; parsing back yields the same Decimal.",
+            "total = baseFare × demand × time × day + Σ seat_surcharges + taxes + fees, reproducible on paper from the response fields."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-05-price-breakdown.feature",
+          "scenario_name": "Total equals the arithmetic of all components",
+          "files_to_modify": [
+            "src/flights/adapters/http/schemas.py",
+            "src/flights/domain/model/quote.py",
+            "tests/integration/http/test_quote_breakdown.py"
+          ],
+          "dependencies": ["05-02"],
+          "estimated_hours": 1.5
+        }
+      ]
+    },
+    {
+      "id": "06",
+      "name": "Slice 06 — Quote TTL and audit log",
+      "slice": "slice-06-quote-ttl-and-audit",
+      "steps": [
+        {
+          "id": "06-01",
+          "name": "QuoteStore with 30-min TTL; get_valid returns None for expired quotes",
+          "criteria": [
+            "save(quote) stores it; get_valid(quote_id, now) returns the quote if now < expires_at, else None.",
+            "POST /quotes response contains quoteId and expiresAt exactly 30 minutes after created_at.",
+            "milestone-06 scenario 'Quote expires 30 minutes after creation' passes."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-06-quote-ttl-audit.feature",
+          "scenario_name": "Quote expires 30 minutes after creation",
+          "files_to_modify": [
+            "src/flights/adapters/inmemory/quote_store.py",
+            "src/flights/application/quote_service.py",
+            "src/flights/adapters/http/schemas.py"
+          ],
+          "dependencies": ["05-03"],
+          "estimated_hours": 1.0
+        },
+        {
+          "id": "06-02",
+          "name": "Append-only audit log events (QuoteCreated, BookingCommitted, PaymentFailed)",
+          "criteria": [
+            "QuoteCreated events include quote_id, session_id, full pricing inputs, computed total, created_at.",
+            "BookingCommitted events include booking_reference, quote_id, total_charged, committed_at.",
+            "PaymentFailed events include quote_id, reason, attempted_at.",
+            "InMemoryAuditLog and JsonlAuditLog both write events (the latter to tmp_path during adapter-integration test).",
+            "Replay check: for each BookingCommitted event, pricing.price replayed against the matching QuoteCreated inputs produces the same total (KPI-T3)."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-06-quote-ttl-audit.feature",
+          "scenario_name": "Audit log replay reconstructs the committed total",
+          "files_to_modify": [
+            "src/flights/adapters/mocks/audit.py",
+            "src/flights/application/quote_service.py",
+            "src/flights/application/booking_service.py",
+            "tests/support/audit_replay.py"
+          ],
+          "dependencies": ["06-01"],
+          "estimated_hours": 1.5
+        },
+        {
+          "id": "06-03",
+          "name": "Commit honors quoted total; 410 on expired; 404 on unknown quote",
+          "criteria": [
+            "BookingService.commit reads quote.total and charges that — never recomputes price.",
+            "Even if occupancy jumps between quote and commit, the committed total equals the quoted total (within TTL).",
+            "After TTL: POST /bookings returns 410 Gone with body citing 'quote expired'.",
+            "Unknown quoteId: POST /bookings returns 404.",
+            "KPI-T1 quote fidelity scenario passes; audit log contains matching QuoteCreated + BookingCommitted entries."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-06-quote-ttl-audit.feature",
+          "scenario_name": "Commit within 30 minutes honors the quoted total even if demand changed",
+          "files_to_modify": [
+            "src/flights/application/booking_service.py",
+            "src/flights/adapters/http/app.py"
+          ],
+          "dependencies": ["06-02"],
+          "estimated_hours": 1.5
+        }
+      ]
+    },
+    {
+      "id": "07",
+      "name": "Slice 07 — Seat locking + concurrent-booking safety",
+      "slice": "slice-07-seat-locking-concurrency",
+      "steps": [
+        {
+          "id": "07-01",
+          "name": "SeatLockStore.acquire atomic CAS primitive with 10-min TTL",
+          "criteria": [
+            "SeatLockStore.acquire(flight_id, seat_ids, session_id, now) is atomic under the store's RLock.",
+            "If any target seat has a non-expired lock owned by a different session, acquire returns SeatLockConflict with the conflicting seats and installs nothing.",
+            "Otherwise it installs a LockRecord per seat with expires_at = now + 10 min.",
+            "Expired lock records are treated as free on next acquire.",
+            "POST /seat-locks with a free seat returns 201 with lockId and expiresAt."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-07-seat-locking.feature",
+          "scenario_name": "Single session acquires a lock on an available seat",
+          "files_to_modify": [
+            "src/flights/adapters/inmemory/seat_lock_store.py",
+            "src/flights/application/seat_hold_service.py",
+            "src/flights/adapters/http/app.py",
+            "tests/unit/adapters/test_seat_lock_store.py"
+          ],
+          "dependencies": ["06-03"],
+          "estimated_hours": 2.0
+        },
+        {
+          "id": "07-02",
+          "name": "Commit transaction under lock + payment failure preserves lock",
+          "criteria": [
+            "BookingService.commit requires a valid (unexpired, matching-session) seat lock; 410 on expired, 403 on session mismatch.",
+            "Commit runs under commit_lock (module-level RLock) and: reads quote → charges payment → installs OCCUPIED seat status → saves booking → releases lock → writes audit, all atomically.",
+            "Payment failure: audit PaymentFailed; no booking; lock remains valid until its own TTL.",
+            "Concurrent non-seat-overlapping bookings complete in parallel (KPI-P3: 10 concurrent successful bookings on different seats)."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-07-seat-locking.feature",
+          "scenario_name": "Payment failure preserves the seat lock for retry",
+          "files_to_modify": [
+            "src/flights/application/booking_service.py",
+            "src/flights/adapters/inmemory/seat_lock_store.py"
+          ],
+          "dependencies": ["07-01"],
+          "estimated_hours": 2.0
+        },
+        {
+          "id": "07-03",
+          "name": "Concurrency harness — 100 trials × 10 threads × 0 double-bookings (KPI-T2)",
+          "criteria": [
+            "scripts/race_last_seat.py runs 100 trials; each trial has 10 threads attempting to lock the same last seat.",
+            "Every trial produces exactly 1 winner and 9 rejections; 0 double-bookings across all 100 trials.",
+            "The harness emits a JSON result summary that the CI gate asserts on.",
+            "milestone-07 scenario 'Race harness — 100 trials, zero double-bookings' passes when the harness is invoked from the test."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-07-seat-locking.feature",
+          "scenario_name": "Race harness — 100 trials, zero double-bookings",
+          "files_to_modify": [
+            "scripts/race_last_seat.py",
+            "tests/e2e/test_race_last_seat.py"
+          ],
+          "dependencies": ["07-02"],
+          "estimated_hours": 2.0
+        }
+      ]
+    },
+    {
+      "id": "08",
+      "name": "Slice 08 — Round-trip search and filters",
+      "slice": "slice-08-round-trip-and-filters",
+      "steps": [
+        {
+          "id": "08-01",
+          "name": "Round-trip pairing — composed from two one-way searches with ≥2h buffer",
+          "criteria": [
+            "GET /flights/search with returnDate returns paired outbound+return flights where return.origin == outbound.destination and return.departure ≥ outbound.arrival + 2h.",
+            "Pagination paginates pairs; metadata reports pairCount AND flightCount (= 2 × pairCount)."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-08-round-trip-filters.feature",
+          "scenario_name": "Round-trip search returns compatible outbound+return pairs",
+          "files_to_modify": [
+            "src/flights/application/search_service.py",
+            "src/flights/adapters/http/app.py",
+            "src/flights/adapters/http/schemas.py",
+            "tests/integration/http/test_round_trip.py"
+          ],
+          "dependencies": ["07-03"],
+          "estimated_hours": 1.5
+        },
+        {
+          "id": "08-02",
+          "name": "Filters — airline, minPrice/maxPrice, departureTimeFrom/To; AND-composed and commutative",
+          "criteria": [
+            "airline filter restricts by IATA exact match.",
+            "minPrice/maxPrice filters on the indicative total (inclusive of surcharges).",
+            "departureTimeFrom/To filters on local-time window.",
+            "Filters compose (AND) and are commutative (swapping order yields identical result sets).",
+            "All 6 milestone-08 scenarios pass."
+          ],
+          "test_file": "tests/acceptance/flight-booking-system/milestone-08-round-trip-filters.feature",
+          "scenario_name": "Filters compose (AND) and are commutative",
+          "files_to_modify": [
+            "src/flights/application/search_service.py",
+            "src/flights/adapters/http/schemas.py"
+          ],
+          "dependencies": ["08-01"],
+          "estimated_hours": 1.5
+        }
+      ]
+    }
+  ],
+  "implementation_scope": {
+    "source_directories": [
+      "src/flights/"
+    ],
+    "test_directories": [
+      "tests/acceptance/flight-booking-system/",
+      "tests/integration/",
+      "tests/unit/",
+      "tests/e2e/"
+    ],
+    "excluded_patterns": [
+      "__init__.py",
+      "__pycache__/**"
+    ]
+  },
+  "validation": {
+    "status": "pending",
+    "reviewer": "orchestrator-automated-checks",
+    "approved_at": null,
+    "notes": "Roadmap populated by orchestrator (main Claude instance) because nw-solution-architect agent is not registered in the Task tool's subagent enum in this session. Content derived verbatim from DISCUSS + DESIGN + DISTILL artifacts already in the repo. Architecture decisions were NOT made here; they were made in DESIGN and this roadmap only translates them into TDD step boundaries."
+  }
+}

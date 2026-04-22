@@ -9,9 +9,12 @@ from __future__ import annotations
 
 from flights.domain.model.ids import BookingReference, QuoteId, SessionId
 
+
 class UuidIdGenerator:
     def new_booking_reference(self) -> BookingReference:
-        raise AssertionError("Not yet implemented — RED scaffold (UuidIdGenerator.new_booking_reference)")
+        raise AssertionError(
+            "Not yet implemented — RED scaffold (UuidIdGenerator.new_booking_reference)"
+        )
 
     def new_quote_id(self) -> QuoteId:
         raise AssertionError("Not yet implemented — RED scaffold (UuidIdGenerator.new_quote_id)")

@@ -14,15 +14,17 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-import pytest
 from pytest_bdd import given, parsers, scenarios, then, when
 
 from flights.adapters.mocks.audit import JsonlAuditLog
 from flights.adapters.mocks.clock import FrozenClock
-from flights.domain.model.flight import Cabin, Flight
+from flights.domain import pricing
+from flights.domain.model.flight import Cabin, Flight, RouteKind
 from flights.domain.model.ids import FlightId, SeatId
 from flights.domain.model.money import Money
+from flights.domain.model.quote import PriceBreakdown, SeatSurchargeLine
 from flights.domain.model.seat import Seat, SeatClass, SeatKind, SeatStatus
+from flights.domain.pricing import TAX_RATES, DayOfWeek, PricingInputs
 from tests.fixtures.cabin import default_cabin
 from tests.fixtures.catalog import seeded_catalog
 
@@ -42,13 +44,27 @@ scenarios(str(FEATURES_DIR / "milestone-08-round-trip-filters.feature"))
 
 # ---- Background / setup steps ----------------------------------------------
 
+
 @given(parsers.parse("the clock is frozen at {date} {time} UTC"))
 def _freeze_clock(frozen_clock: FrozenClock, date: str, time: str) -> None:
     frozen_clock.set(datetime.fromisoformat(f"{date}T{time}+00:00"))
 
 
-@given(parsers.parse('the flight catalog has one flight "{flight_id}" from {origin} to {destination} departing {date} at {time}, base fare {fare} USD'))
-def _seed_single_flight(container, world: dict, flight_id: str, origin: str, destination: str, date: str, time: str, fare: str) -> None:
+@given(
+    parsers.parse(
+        'the flight catalog has one flight "{flight_id}" from {origin} to {destination} departing {date} at {time}, base fare {fare} USD'
+    )
+)
+def _seed_single_flight(
+    container,
+    world: dict,
+    flight_id: str,
+    origin: str,
+    destination: str,
+    date: str,
+    time: str,
+    fare: str,
+) -> None:
     departure = datetime.fromisoformat(f"{date}T{time}+00:00")
     # Build a minimal flight with an empty cabin; scenarios that need seats add them explicitly.
     flight = Flight(
@@ -65,11 +81,15 @@ def _seed_single_flight(container, world: dict, flight_id: str, origin: str, des
     world["last_flight_id"] = flight_id
 
 
-@given(parsers.parse(
-    "the flight catalog is seeded with {total:d} flights across {routes:d} routes, "
-    "{airlines:d} airlines, {dates:d} dates, {classes:d} classes"
-))
-def _seed_catalog(container, total: int, routes: int, airlines: int, dates: int, classes: int) -> None:
+@given(
+    parsers.parse(
+        "the flight catalog is seeded with {total:d} flights across {routes:d} routes, "
+        "{airlines:d} airlines, {dates:d} dates, {classes:d} classes"
+    )
+)
+def _seed_catalog(
+    container, total: int, routes: int, airlines: int, dates: int, classes: int
+) -> None:
     """Load the deterministic seeded catalog into the container's flight repo.
 
     The numeric parameters are minimums — the step asserts the catalog actually
@@ -89,13 +109,13 @@ def _seed_catalog(container, total: int, routes: int, airlines: int, dates: int,
         container.flight_repo.add(flight)
 
 
-@given(parsers.parse(
-    'the flight "{flight_id}" has the default 30x6 cabin '
-    "(rows 1-2 First, 3-6 Business, 7-30 Economy)"
-))
-def _seed_flight_with_default_cabin(
-    container, world: dict, flight_id: str
-) -> None:
+@given(
+    parsers.parse(
+        'the flight "{flight_id}" has the default 30x6 cabin '
+        "(rows 1-2 First, 3-6 Business, 7-30 Economy)"
+    )
+)
+def _seed_flight_with_default_cabin(container, world: dict, flight_id: str) -> None:
     """Seed a flight identified by ``flight_id`` with the ADR-004 default cabin.
 
     The departure and fare are irrelevant to milestone-03 seat-map assertions,
@@ -122,7 +142,9 @@ def _seed_seat(container, world: dict, seat_id: str, seat_class: str) -> None:
     flight = container.flight_repo.get(FlightId(world["last_flight_id"]))
     if flight is None:
         raise AssertionError("flight not seeded")
-    seat = Seat(id=SeatId(seat_id), seat_class=SeatClass[seat_class.upper()], kind=SeatKind.STANDARD)
+    seat = Seat(
+        id=SeatId(seat_id), seat_class=SeatClass[seat_class.upper()], kind=SeatKind.STANDARD
+    )
     flight.cabin.seats[seat.id] = seat
 
 
@@ -147,6 +169,7 @@ def _assert_seat_is_available(container, world: dict, seat_id: str, flight_id: s
 
 # ---- Driving adapter steps (HTTP) ------------------------------------------
 
+
 @when(parsers.parse("the traveler searches flights from {origin} to {destination} on {date}"))
 def _http_search(client, world: dict, origin: str, destination: str, date: str) -> None:
     world["response"] = client.get(
@@ -160,9 +183,11 @@ def _http_search(client, world: dict, origin: str, destination: str, date: str) 
     }
 
 
-@when(parsers.parse(
-    "the traveler searches flights from {origin} to {destination} on {date} requesting page {page:d}"
-))
+@when(
+    parsers.parse(
+        "the traveler searches flights from {origin} to {destination} on {date} requesting page {page:d}"
+    )
+)
 def _http_search_with_page(
     client, world: dict, origin: str, destination: str, date: str, page: int
 ) -> None:
@@ -255,7 +280,11 @@ def _assert_seat_occupied(world: dict, seat_id: str) -> None:
     assert actual == "OCCUPIED", f"seat {seat_id}: expected OCCUPIED, got {actual}"
 
 
-@when(parsers.parse('the traveler books flight "{flight_id}" with seat "{seat_id}" for passenger "{name}" using payment token "{token}"'))
+@when(
+    parsers.parse(
+        'the traveler books flight "{flight_id}" with seat "{seat_id}" for passenger "{name}" using payment token "{token}"'
+    )
+)
 def _http_book(client, world: dict, flight_id: str, seat_id: str, name: str, token: str) -> None:
     world["response"] = client.post(
         "/bookings",
@@ -353,23 +382,28 @@ def _http_get_booking(client, world: dict) -> None:
 
 # ---- Assertion steps --------------------------------------------------------
 
+
 @then(parsers.parse("the response status is {status:d}"))
 def _assert_status(world: dict, status: int) -> None:
     actual = world["response"].status_code
     assert actual == status, f"expected HTTP {status}, got {actual}: {world['response'].text}"
 
 
-@then(parsers.parse(
-    'every returned flight has origin "{origin}", destination "{destination}", '
-    "and departure date {date}"
-))
+@then(
+    parsers.parse(
+        'every returned flight has origin "{origin}", destination "{destination}", '
+        "and departure date {date}"
+    )
+)
 def _assert_all_match_filter(world: dict, origin: str, destination: str, date: str) -> None:
     body = world["response"].json()
     flights = body.get("flights", [])
     assert flights, "expected at least one flight in the response"
     for flight in flights:
         assert flight["origin"] == origin, f"origin mismatch: {flight['origin']}"
-        assert flight["destination"] == destination, f"destination mismatch: {flight['destination']}"
+        assert flight["destination"] == destination, (
+            f"destination mismatch: {flight['destination']}"
+        )
         assert flight["departureAt"].startswith(date), (
             f"departure date mismatch: {flight['departureAt']}"
         )
@@ -461,9 +495,9 @@ def _assert_email_queued(container, name: str) -> None:
 def _assert_audit_event(container, world: dict, event_type: str) -> None:
     events = getattr(container.audit, "events", [])
     ref = world["booking_reference"]
-    assert any(
-        e.get("type") == event_type and e.get("booking_reference") == ref for e in events
-    ), f"no {event_type} event for {ref} in {events!r}"
+    assert any(e.get("type") == event_type and e.get("booking_reference") == ref for e in events), (
+        f"no {event_type} event for {ref} in {events!r}"
+    )
 
 
 # ---- Milestone 06: quote TTL + audit steps (step 06-01) ---------------------
@@ -533,9 +567,7 @@ def _http_create_quote_for_seat(client, world: dict, seat_id: str) -> None:
 
 
 @then("the response contains an expiresAt exactly 30 minutes in the future")
-def _assert_expires_at_is_thirty_minutes_ahead(
-    frozen_clock: FrozenClock, world: dict
-) -> None:
+def _assert_expires_at_is_thirty_minutes_ahead(frozen_clock: FrozenClock, world: dict) -> None:
     """Assert ``expiresAt`` is exactly clock.now() + 30 minutes.
 
     The test uses the frozen clock as the authoritative "now" — production code
@@ -544,21 +576,19 @@ def _assert_expires_at_is_thirty_minutes_ahead(
     something else (e.g., datetime.now()) which would be a bug.
     """
     from datetime import timedelta
+
     body = world["response"].json()
     expires_at_str = body.get("expiresAt")
     assert expires_at_str, f"response missing expiresAt: {body!r}"
     expires_at = datetime.fromisoformat(expires_at_str)
     expected = frozen_clock.now() + timedelta(minutes=30)
     assert expires_at == expected, (
-        f"expiresAt {expires_at.isoformat()} != frozen_clock + 30min "
-        f"{expected.isoformat()}"
+        f"expiresAt {expires_at.isoformat()} != frozen_clock + 30min {expected.isoformat()}"
     )
 
 
 @then(parsers.parse('the audit log contains a "{event_type}" event for that quote'))
-def _assert_audit_event_for_quote(
-    container, world: dict, event_type: str
-) -> None:
+def _assert_audit_event_for_quote(container, world: dict, event_type: str) -> None:
     """Assert the audit log contains an event of ``event_type`` tagged with the
     quote_id returned by the preceding POST /quotes. Mirrors the booking-level
     assertion above but keys on ``quote_id`` because QuoteCreated events are
@@ -567,10 +597,9 @@ def _assert_audit_event_for_quote(
     events = getattr(container.audit, "events", [])
     quote_id = world["quote_id"]
     assert quote_id, "no quote_id captured from POST /quotes response"
-    assert any(
-        e.get("type") == event_type and e.get("quote_id") == quote_id
-        for e in events
-    ), f"no {event_type} event for quote {quote_id} in {events!r}"
+    assert any(e.get("type") == event_type and e.get("quote_id") == quote_id for e in events), (
+        f"no {event_type} event for quote {quote_id} in {events!r}"
+    )
 
 
 # ---- Milestone 06: audit-log replay (step 06-02) ----------------------------
@@ -634,8 +663,7 @@ def _assert_replay_produces_same_total(world: dict) -> None:
 
     mismatches = verify_commits(world["audit_events"])
     assert mismatches == [], (
-        f"audit replay found mismatches: {mismatches!r}; "
-        f"events: {world['audit_events']!r}"
+        f"audit replay found mismatches: {mismatches!r}; events: {world['audit_events']!r}"
     )
 
 
@@ -668,7 +696,10 @@ _QUOTE_TOTAL_228_74_BASE_FARE = "278.14"
 
 @when(parsers.parse("the traveler creates a quote with total {amount} USD"))
 def _http_create_quote_with_specific_total(
-    container, client, world: dict, amount: str,
+    container,
+    client,
+    world: dict,
+    amount: str,
 ) -> None:
     """Reseed the milestone-06 flight with a base fare that produces ``amount``
     as the quote total under the frozen clock, then drive POST /quotes.
@@ -678,9 +709,7 @@ def _http_create_quote_with_specific_total(
     # Only 228.74 is used by the milestone-06 @kpi scenario. Guard against
     # silent misuse: if a future scenario cites a different total we need an
     # explicit base-fare derivation for it rather than copy-pasting the seed.
-    assert amount == "228.74", (
-        f"step only supports the 228.74 KPI anchor; got {amount!r}"
-    )
+    assert amount == "228.74", f"step only supports the 228.74 KPI anchor; got {amount!r}"
     flight_id = world["last_flight_id"]
     base_fare = Money.of(_QUOTE_TOTAL_228_74_BASE_FARE)
     # Replace the flight with one that has the target base fare. The
@@ -789,14 +818,15 @@ def _jump_occupancy_to_86(container, world: dict) -> None:
             )
             flipped += 1
     assert flipped >= target_occupied, (
-        f"could not flip enough seats to 86%+ bracket: flipped {flipped}, "
-        f"needed {target_occupied}"
+        f"could not flip enough seats to 86%+ bracket: flipped {flipped}, needed {target_occupied}"
     )
 
 
 @when(parsers.parse("the clock advances by {minutes:d} minutes"))
 def _advance_clock(
-    frozen_clock: FrozenClock, container, minutes: int,
+    frozen_clock: FrozenClock,
+    container,
+    minutes: int,
 ) -> None:
     """Advance both the fixture clock (used by Then assertions that read
     ``frozen_clock.now()``) and the container's internal clock (used by
@@ -864,16 +894,18 @@ def _assert_booking_total_charged(world: dict, amount: str) -> None:
     body = world["response"].json()
     total = body.get("totalCharged", {})
     actual = total.get("amount")
-    assert actual == amount, (
-        f"expected total_charged {amount}, got {actual!r} in {body!r}"
+    assert actual == amount, f"expected total_charged {amount}, got {actual!r} in {body!r}"
+
+
+@then(
+    parsers.parse(
+        'the audit log contains a "{event_type}" event referencing the quote id and total'
     )
-
-
-@then(parsers.parse(
-    'the audit log contains a "{event_type}" event referencing the quote id and total'
-))
+)
 def _assert_booking_committed_references_quote_and_total(
-    container, world: dict, event_type: str,
+    container,
+    world: dict,
+    event_type: str,
 ) -> None:
     """Assert the audit log contains an event of ``event_type`` whose
     ``quote_id`` and ``total_charged`` match the quote created earlier. This
@@ -885,7 +917,8 @@ def _assert_booking_committed_references_quote_and_total(
     expected_total = world["quote_total"]
     match = next(
         (
-            e for e in events
+            e
+            for e in events
             if e.get("type") == event_type
             and e.get("quote_id") == quote_id
             and e.get("total_charged") == expected_total
@@ -893,8 +926,7 @@ def _assert_booking_committed_references_quote_and_total(
         None,
     )
     assert match is not None, (
-        f"no {event_type} event for quote_id={quote_id!r} total={expected_total!r} "
-        f"in {events!r}"
+        f"no {event_type} event for quote_id={quote_id!r} total={expected_total!r} in {events!r}"
     )
 
 
@@ -906,12 +938,11 @@ def _assert_no_event_written(container, event_type: str) -> None:
     """
     events = getattr(container.audit, "events", [])
     offending = [e for e in events if e.get("type") == event_type]
-    assert offending == [], (
-        f"expected no {event_type} events, got {offending!r}"
-    )
+    assert offending == [], f"expected no {event_type} events, got {offending!r}"
 
 
 # ---- Adapter integration: JsonlAuditLog filesystem scenario -----------------
+
 
 @given("an audit log at a temporary JSON-lines file")
 def _jsonl_audit_log(audit_path: Path, world: dict) -> None:
@@ -937,7 +968,9 @@ def _assert_line_count(world: dict, n: int) -> None:
     assert len(lines) == n
 
 
-@then(parsers.parse('each line parses as a JSON object with a "type" field matching the written type'))
+@then(
+    parsers.parse('each line parses as a JSON object with a "type" field matching the written type')
+)
 def _assert_types(world: dict) -> None:
     for ln in world["audit_path"].read_text().splitlines():
         if ln.strip():
@@ -962,18 +995,22 @@ def _assert_read_all(world: dict, n: int) -> None:
 # keeping them in-process avoids fabricating date arithmetic that isn't
 # observable in the assertions.
 
-from flights.domain import pricing
-from flights.domain.pricing import DayOfWeek, PricingInputs
-
 
 _DOW_BY_NAME: dict[str, DayOfWeek] = {
-    "MON": DayOfWeek.MON, "Monday":    DayOfWeek.MON,
-    "TUE": DayOfWeek.TUE, "Tuesday":   DayOfWeek.TUE,
-    "WED": DayOfWeek.WED, "Wednesday": DayOfWeek.WED,
-    "THU": DayOfWeek.THU, "Thursday":  DayOfWeek.THU,
-    "FRI": DayOfWeek.FRI, "Friday":    DayOfWeek.FRI,
-    "SAT": DayOfWeek.SAT, "Saturday":  DayOfWeek.SAT,
-    "SUN": DayOfWeek.SUN, "Sunday":    DayOfWeek.SUN,
+    "MON": DayOfWeek.MON,
+    "Monday": DayOfWeek.MON,
+    "TUE": DayOfWeek.TUE,
+    "Tuesday": DayOfWeek.TUE,
+    "WED": DayOfWeek.WED,
+    "Wednesday": DayOfWeek.WED,
+    "THU": DayOfWeek.THU,
+    "Thursday": DayOfWeek.THU,
+    "FRI": DayOfWeek.FRI,
+    "Friday": DayOfWeek.FRI,
+    "SAT": DayOfWeek.SAT,
+    "Saturday": DayOfWeek.SAT,
+    "SUN": DayOfWeek.SUN,
+    "Sunday": DayOfWeek.SUN,
 }
 
 _HTTP_PRICING_FLIGHT_ID = "FL-PRICING-04"
@@ -1007,8 +1044,14 @@ def _build_http_pricing_cabin(occupancy_pct: int) -> Cabin:
 
 
 def _seed_http_pricing_flight(
-    container, world: dict, *,
-    dow_name: str, date: str, time: str, pct: int, fare: str,
+    container,
+    world: dict,
+    *,
+    dow_name: str,
+    date: str,
+    time: str,
+    pct: int,
+    fare: str,
 ) -> None:
     """Register a flight whose ``departure_at.weekday()`` matches ``dow_name``
     and whose cabin occupancy equals ``pct``. Writes through the real
@@ -1035,13 +1078,19 @@ def _seed_http_pricing_flight(
     world["last_flight_id"] = _HTTP_PRICING_FLIGHT_ID
 
 
-@given(parsers.re(
-    r"a flight departing (?P<dow_name>\w+) (?P<date>\d{4}-\d{2}-\d{2}) "
-    r"with (?P<pct>\d+)% occupancy and base fare (?P<fare>[\d.]+) USD"
-))
+@given(
+    parsers.re(
+        r"a flight departing (?P<dow_name>\w+) (?P<date>\d{4}-\d{2}-\d{2}) "
+        r"with (?P<pct>\d+)% occupancy and base fare (?P<fare>[\d.]+) USD"
+    )
+)
 def _seed_pricing_flight_dow_date(
-    container, world: dict,
-    dow_name: str, date: str, pct: str, fare: str,
+    container,
+    world: dict,
+    dow_name: str,
+    date: str,
+    pct: str,
+    fare: str,
 ) -> None:
     """Register a flight for HTTP-driven pricing scenarios. Time defaults to
     00:00 UTC — the days-before calculation is date-based so the hour is
@@ -1049,32 +1098,47 @@ def _seed_pricing_flight_dow_date(
     yyyy-mm-dd so the ``at HH:MM`` variant cannot be accidentally captured
     by this pattern."""
     _seed_http_pricing_flight(
-        container, world,
-        dow_name=dow_name, date=date, time="00:00", pct=int(pct), fare=fare,
+        container,
+        world,
+        dow_name=dow_name,
+        date=date,
+        time="00:00",
+        pct=int(pct),
+        fare=fare,
     )
 
 
-@given(parsers.re(
-    r"a flight departing (?P<dow_name>\w+) (?P<date>\d{4}-\d{2}-\d{2}) "
-    r"at (?P<time>\d{2}:\d{2}) with (?P<pct>\d+)% occupancy "
-    r"and base fare (?P<fare>[\d.]+) USD"
-))
+@given(
+    parsers.re(
+        r"a flight departing (?P<dow_name>\w+) (?P<date>\d{4}-\d{2}-\d{2}) "
+        r"at (?P<time>\d{2}:\d{2}) with (?P<pct>\d+)% occupancy "
+        r"and base fare (?P<fare>[\d.]+) USD"
+    )
+)
 def _seed_pricing_flight_dow_date_time(
-    container, world: dict,
-    dow_name: str, date: str, time: str, pct: str, fare: str,
+    container,
+    world: dict,
+    dow_name: str,
+    date: str,
+    time: str,
+    pct: str,
+    fare: str,
 ) -> None:
     """Same as the dow+date Given but the departure has an explicit clock time —
     used by Appendix B example 3 where same-day booking hinges on
     ``days_before_departure == 0`` regardless of hour-of-day."""
     _seed_http_pricing_flight(
-        container, world,
-        dow_name=dow_name, date=date, time=time, pct=int(pct), fare=fare,
+        container,
+        world,
+        dow_name=dow_name,
+        date=date,
+        time=time,
+        pct=int(pct),
+        fare=fare,
     )
 
 
-@given(parsers.parse(
-    "a flight with {pct:d}% occupancy and base fare {fare} USD"
-))
+@given(parsers.parse("a flight with {pct:d}% occupancy and base fare {fare} USD"))
 def _seed_pricing_flight_plain(world: dict, pct: int, fare: str) -> None:
     """Seed only base fare + occupancy for the Scenario Outline rows — those
     scenarios exercise multiplier selection through the pricing function as
@@ -1116,15 +1180,14 @@ class _BreakdownProjection:
     assertions. Decouples the assertion steps from the domain ``PriceBreakdown``
     type (which carries ``base_fare``/``seat_surcharges``/``taxes``/``fees``
     that aren't exercised at this slice)."""
+
     total: Money
     demand_multiplier: Decimal
     time_multiplier: Decimal
     day_multiplier: Decimal
 
 
-@when(parsers.parse(
-    "the traveler quotes at {days:d} days before departure on {dow_name}"
-))
+@when(parsers.parse("the traveler quotes at {days:d} days before departure on {dow_name}"))
 def _price_quote_outline(world: dict, days: int, dow_name: str) -> None:
     ctx = world["pricing_context"]
     breakdown = pricing.price(
@@ -1145,21 +1208,19 @@ def _assert_total(world: dict, amount: str) -> None:
     assert actual == Money.of(amount), f"expected total {amount}, got {actual.amount}"
 
 
-@then(parsers.parse(
-    "the breakdown shows demand_multiplier {demand}, time_multiplier {time}, "
-    "day_multiplier {dow}"
-))
+@then(
+    parsers.parse(
+        "the breakdown shows demand_multiplier {demand}, time_multiplier {time}, "
+        "day_multiplier {dow}"
+    )
+)
 def _assert_breakdown_multipliers(world: dict, demand: str, time: str, dow: str) -> None:
     b = world["breakdown"]
     assert b.demand_multiplier == Decimal(demand), (
         f"demand: expected {demand}, got {b.demand_multiplier}"
     )
-    assert b.time_multiplier == Decimal(time), (
-        f"time: expected {time}, got {b.time_multiplier}"
-    )
-    assert b.day_multiplier == Decimal(dow), (
-        f"day: expected {dow}, got {b.day_multiplier}"
-    )
+    assert b.time_multiplier == Decimal(time), f"time: expected {time}, got {b.time_multiplier}"
+    assert b.day_multiplier == Decimal(dow), f"day: expected {dow}, got {b.day_multiplier}"
 
 
 @then(parsers.parse("the demand_multiplier is {expected}"))
@@ -1182,6 +1243,7 @@ def _assert_day(world: dict, expected: str) -> None:
 
 # --- Rule-table-as-source-of-truth meta scenario -----------------------------
 
+
 @when("all demand multipliers are read from the rule table")
 def _read_rule_tables(world: dict) -> None:
     world["rule_tables"] = {
@@ -1198,8 +1260,12 @@ def _assert_tables_match_appendix_b(world: dict) -> None:
     # structured as sorted (upper_bound_exclusive, multiplier) pairs. The
     # test asserts the multipliers themselves are present as values.
     expected_demand_multipliers = {
-        Decimal("1.00"), Decimal("1.15"), Decimal("1.35"),
-        Decimal("1.60"), Decimal("2.00"), Decimal("2.50"),
+        Decimal("1.00"),
+        Decimal("1.15"),
+        Decimal("1.35"),
+        Decimal("1.60"),
+        Decimal("2.00"),
+        Decimal("2.50"),
     }
     actual_demand_multipliers = set(demand.values())
     assert expected_demand_multipliers <= actual_demand_multipliers, (
@@ -1208,12 +1274,15 @@ def _assert_tables_match_appendix_b(world: dict) -> None:
     )
     time_values = set(m for _, m in world["rule_tables"]["TIME_TABLE"])
     expected_time_multipliers = {
-        Decimal("0.85"), Decimal("0.90"), Decimal("1.00"),
-        Decimal("1.20"), Decimal("1.50"), Decimal("2.00"),
+        Decimal("0.85"),
+        Decimal("0.90"),
+        Decimal("1.00"),
+        Decimal("1.20"),
+        Decimal("1.50"),
+        Decimal("2.00"),
     }
     assert expected_time_multipliers <= time_values, (
-        f"TIME_TABLE missing expected multipliers: "
-        f"{expected_time_multipliers - time_values}"
+        f"TIME_TABLE missing expected multipliers: {expected_time_multipliers - time_values}"
     )
     dow = world["rule_tables"]["DOW_TABLE"]
     assert dow[DayOfWeek.MON] == Decimal("0.90")
@@ -1266,13 +1335,20 @@ def _milestone_05_base_cabin() -> Cabin:
     return cabin
 
 
-@given(parsers.parse(
-    'a flight "{flight_id}" with base fare {fare} USD, departing {dow_name} '
-    "with {pct:d}% occupancy, {days:d} days out"
-))
+@given(
+    parsers.parse(
+        'a flight "{flight_id}" with base fare {fare} USD, departing {dow_name} '
+        "with {pct:d}% occupancy, {days:d} days out"
+    )
+)
 def _seed_milestone_05_flight(
-    container, world: dict,
-    flight_id: str, fare: str, dow_name: str, pct: int, days: int,
+    container,
+    world: dict,
+    flight_id: str,
+    fare: str,
+    dow_name: str,
+    pct: int,
+    days: int,
 ) -> None:
     """Seed the milestone-05 Background flight.
 
@@ -1296,9 +1372,7 @@ def _seed_milestone_05_flight(
     while DayOfWeek(candidate.weekday()) != expected_dow:
         candidate = candidate + timedelta(days=1)
         offset += 1
-        assert offset < 7, (
-            f"could not find {dow_name} within 7 days after clock+{days}"
-        )
+        assert offset < 7, f"could not find {dow_name} within 7 days after clock+{days}"
     departure = datetime.combine(candidate, datetime.min.time(), tzinfo=UTC)
     flight = Flight(
         id=FlightId(flight_id),
@@ -1356,10 +1430,12 @@ def _http_quote_single_seat(client, world: dict, seat_id: str) -> None:
     )
 
 
-@then(parsers.parse(
-    'the breakdown\'s seat_surcharges list contains exactly '
-    "{{ seat: \"{seat}\", amount: {amount} }}"
-))
+@then(
+    parsers.parse(
+        "the breakdown's seat_surcharges list contains exactly "
+        '{{ seat: "{seat}", amount: {amount} }}'
+    )
+)
 def _assert_seat_surcharges_exactly(world: dict, seat: str, amount: str) -> None:
     """Assert the response's seat_surcharges list has exactly one entry
     matching (seat, amount). ``amount`` is a decimal string like ``35.00``
@@ -1367,25 +1443,20 @@ def _assert_seat_surcharges_exactly(world: dict, seat: str, amount: str) -> None
     """
     body = world["response"].json()
     lines = body.get("seatSurcharges")
-    assert isinstance(lines, list), (
-        f"expected seatSurcharges list, got {lines!r} in {body!r}"
-    )
-    assert len(lines) == 1, (
-        f"expected exactly 1 seat_surcharge line, got {len(lines)}: {lines!r}"
-    )
+    assert isinstance(lines, list), f"expected seatSurcharges list, got {lines!r} in {body!r}"
+    assert len(lines) == 1, f"expected exactly 1 seat_surcharge line, got {len(lines)}: {lines!r}"
     line = lines[0]
-    assert line.get("seat") == seat, (
-        f"expected seat {seat!r}, got {line.get('seat')!r}"
-    )
+    assert line.get("seat") == seat, f"expected seat {seat!r}, got {line.get('seat')!r}"
     assert Money.of(line.get("amount")) == Money.of(amount), (
         f"expected amount {amount}, got {line.get('amount')!r}"
     )
 
 
-@then(parsers.parse(
-    'the breakdown\'s seat_surcharges list contains '
-    "{{ seat: \"{seat}\", amount: {amount} }}"
-))
+@then(
+    parsers.parse(
+        'the breakdown\'s seat_surcharges list contains {{ seat: "{seat}", amount: {amount} }}'
+    )
+)
 def _assert_seat_surcharges_contains(world: dict, seat: str, amount: str) -> None:
     """Assert the response's seat_surcharges list contains an entry matching
     (seat, amount). Used by scenarios that may add more lines in later slices
@@ -1393,12 +1464,13 @@ def _assert_seat_surcharges_contains(world: dict, seat: str, amount: str) -> Non
     """
     body = world["response"].json()
     lines = body.get("seatSurcharges")
-    assert isinstance(lines, list), (
-        f"expected seatSurcharges list, got {lines!r} in {body!r}"
-    )
+    assert isinstance(lines, list), f"expected seatSurcharges list, got {lines!r} in {body!r}"
     match = next(
-        (ln for ln in lines if ln.get("seat") == seat
-         and Money.of(ln.get("amount")) == Money.of(amount)),
+        (
+            ln
+            for ln in lines
+            if ln.get("seat") == seat and Money.of(ln.get("amount")) == Money.of(amount)
+        ),
         None,
     )
     assert match is not None, (
@@ -1414,13 +1486,13 @@ def _assert_seat_surcharges_contains(world: dict, seat: str, amount: str) -> Non
 # re-computes the expected taxable base from the response's multipliers so a
 # test failure reports the exact discrepancy.
 
-from flights.domain.model.flight import RouteKind
-from flights.domain.pricing import TAX_RATES
-
 
 @given(parsers.parse('flight "{flight_id}" is marked "{kind}"'))
 def _mark_flight_route_kind(
-    container, world: dict, flight_id: str, kind: str,
+    container,
+    world: dict,
+    flight_id: str,
+    kind: str,
 ) -> None:
     """Pin a flight's RouteKind so POST /quotes selects the matching tax rate.
 
@@ -1521,8 +1593,6 @@ def _assert_taxes_line_matches_rate_times_base(world: dict, kind: str) -> None:
 #     string with exactly 2dp and that parsing each back through ``Decimal``
 #     yields the same quantized value (no JSON-float precision loss).
 
-from flights.domain.model.quote import PriceBreakdown, SeatSurchargeLine
-
 
 _MONEY_FIELDS: tuple[str, ...] = ("baseFare", "taxes", "fees", "total")
 
@@ -1601,15 +1671,10 @@ def _assert_response_fields_are_sufficient_for_reproduction(world: dict) -> None
         "total",
     )
     missing = [field for field in required if field not in body]
-    assert not missing, (
-        f"response missing fields required to reproduce total: {missing!r}"
-    )
+    assert not missing, f"response missing fields required to reproduce total: {missing!r}"
 
 
-@then(
-    "every monetary value in the response is a string with exactly "
-    "2 decimal places"
-)
+@then("every monetary value in the response is a string with exactly 2 decimal places")
 def _assert_money_fields_are_two_decimal_strings(world: dict) -> None:
     """Every money field is a JSON string (not a JSON number) with exactly
     two digits after a single decimal point. Rejecting scientific notation
@@ -1628,9 +1693,7 @@ def _assert_money_fields_are_two_decimal_strings(world: dict) -> None:
             f"{field} must have exactly 2 decimal places, got {value!r}"
         )
         # Reject scientific notation; string must parse as a plain Decimal.
-        assert "e" not in value.lower(), (
-            f"{field} must not use scientific notation: {value!r}"
-        )
+        assert "e" not in value.lower(), f"{field} must not use scientific notation: {value!r}"
     # Seat surcharge amounts carry the same guarantee.
     for line in body.get("seatSurcharges", []):
         amount = line.get("amount")
@@ -1685,12 +1748,16 @@ def _assert_money_fields_round_trip_through_decimal(world: dict) -> None:
 # pinned rather than cluttering the flight with dozens of irrelevant seats.
 
 
-@given(parsers.parse(
-    'a flight "{flight_id}" where seat "{seat_id}" is the only remaining '
-    "AVAILABLE seat"
-))
+@given(
+    parsers.parse(
+        'a flight "{flight_id}" where seat "{seat_id}" is the only remaining AVAILABLE seat'
+    )
+)
 def _seed_milestone_07_flight_single_available_seat(
-    container, world: dict, flight_id: str, seat_id: str,
+    container,
+    world: dict,
+    flight_id: str,
+    seat_id: str,
 ) -> None:
     """Seed a flight whose cabin has exactly one AVAILABLE seat, identified
     by ``seat_id``. Other seats are irrelevant to milestone-07 assertions —
@@ -1720,12 +1787,17 @@ def _seed_milestone_07_flight_single_available_seat(
     world["last_flight_id"] = flight_id
 
 
-@when(parsers.parse(
-    'session "{session_id}" requests a lock on seat "{seat_id}" '
-    'for flight "{flight_id}"'
-))
+@when(
+    parsers.parse(
+        'session "{session_id}" requests a lock on seat "{seat_id}" for flight "{flight_id}"'
+    )
+)
 def _http_request_seat_lock_for_flight(
-    client, world: dict, session_id: str, seat_id: str, flight_id: str,
+    client,
+    world: dict,
+    session_id: str,
+    seat_id: str,
+    flight_id: str,
 ) -> None:
     """Drive POST /seat-locks with an explicit flightId + seatIds + sessionId.
 
@@ -1745,7 +1817,10 @@ def _http_request_seat_lock_for_flight(
 
 @when(parsers.parse('session "{session_id}" requests a lock on seat "{seat_id}"'))
 def _http_request_seat_lock_short(
-    client, world: dict, session_id: str, seat_id: str,
+    client,
+    world: dict,
+    session_id: str,
+    seat_id: str,
 ) -> None:
     """Alias When — uses ``world["last_flight_id"]`` when the feature file
     omits the flight id. Covers the "Lock auto-expires" scenario where the
@@ -1762,17 +1837,17 @@ def _http_request_seat_lock_short(
     )
 
 
-@then(parsers.parse(
-    "the response contains a lock id and an expiresAt 10 minutes in the future"
-))
+@then(parsers.parse("the response contains a lock id and an expiresAt 10 minutes in the future"))
 def _assert_lock_id_and_expires_at_ten_minutes(
-    frozen_clock: FrozenClock, world: dict,
+    frozen_clock: FrozenClock,
+    world: dict,
 ) -> None:
     """Assert the 201 body has a non-empty lockId and an expiresAt exactly
     10 minutes after the frozen clock — anchoring TTL computation on the
     production clock port, not ``datetime.now()``.
     """
     from datetime import timedelta
+
     body = world["response"].json()
     lock_id = body.get("lockId")
     assert lock_id, f"response missing lockId: {body!r}"
@@ -1781,14 +1856,16 @@ def _assert_lock_id_and_expires_at_ten_minutes(
     expires_at = datetime.fromisoformat(expires_at_str)
     expected = frozen_clock.now() + timedelta(minutes=10)
     assert expires_at == expected, (
-        f"expiresAt {expires_at.isoformat()} != frozen_clock + 10min "
-        f"{expected.isoformat()}"
+        f"expiresAt {expires_at.isoformat()} != frozen_clock + 10min {expected.isoformat()}"
     )
 
 
 @given(parsers.parse('session "{session_id}" holds a valid lock on seat "{seat_id}"'))
 def _seed_session_holds_valid_lock(
-    client, world: dict, session_id: str, seat_id: str,
+    client,
+    world: dict,
+    session_id: str,
+    seat_id: str,
 ) -> None:
     """Drive POST /seat-locks through the HTTP port so the lock is installed
     by production code (not by direct store manipulation). Asserts the 201
@@ -1804,14 +1881,16 @@ def _seed_session_holds_valid_lock(
         },
     )
     assert response.status_code == 201, (
-        f"failed to seed lock for session {session_id!r}: "
-        f"{response.status_code} {response.text}"
+        f"failed to seed lock for session {session_id!r}: {response.status_code} {response.text}"
     )
 
 
 @when(parsers.parse('session "{session_id}" requests the seat map for "{flight_id}"'))
 def _http_session_requests_seat_map(
-    client, world: dict, session_id: str, flight_id: str,
+    client,
+    world: dict,
+    session_id: str,
+    flight_id: str,
 ) -> None:
     """GET the seat map while identifying the requesting session via the
     ``sessionId`` query parameter. The SeatMapService marks seats OCCUPIED to
@@ -1825,11 +1904,11 @@ def _http_session_requests_seat_map(
     )
 
 
-@then(parsers.parse(
-    'seat "{seat_id}" is reported as unavailable to session "{session_id}"'
-))
+@then(parsers.parse('seat "{seat_id}" is reported as unavailable to session "{session_id}"'))
 def _assert_seat_unavailable_to_session(
-    world: dict, seat_id: str, session_id: str,
+    world: dict,
+    seat_id: str,
+    session_id: str,
 ) -> None:
     """Assert the seat map returned to ``session_id`` reports ``seat_id`` as
     OCCUPIED (the only non-AVAILABLE status the contract exposes that maps
@@ -1846,11 +1925,14 @@ def _assert_seat_unavailable_to_session(
     )
 
 
-@given(parsers.parse(
-    'session "{session_id}" holds a lock on seat "{seat_id}" acquired at {time}'
-))
+@given(parsers.parse('session "{session_id}" holds a lock on seat "{seat_id}" acquired at {time}'))
 def _seed_session_holds_lock_at(
-    client, container, world: dict, session_id: str, seat_id: str, time: str,
+    client,
+    container,
+    world: dict,
+    session_id: str,
+    seat_id: str,
+    time: str,
 ) -> None:
     """Seed a lock acquired at a specific wall-clock time. The Background
     already frozen the clock at 10:00:00; ``time`` is a sanity tag for the
@@ -1858,6 +1940,7 @@ def _seed_session_holds_lock_at(
     fails loudly rather than silently drifts.
     """
     from datetime import time as time_type
+
     expected = time_type.fromisoformat(time)
     actual = container.clock.now().time()
     assert actual.replace(microsecond=0) == expected, (
@@ -1879,7 +1962,9 @@ def _seed_session_holds_lock_at(
 
 @when(parsers.parse("the clock advances to {time}"))
 def _advance_clock_to(
-    frozen_clock: FrozenClock, container, time: str,
+    frozen_clock: FrozenClock,
+    container,
+    time: str,
 ) -> None:
     """Advance both the fixture clock and the container clock to the specified
     wall-clock time on the same day. Mirrors ``_advance_clock`` (by-minutes
@@ -1895,9 +1980,7 @@ def _advance_clock_to(
         microsecond=0,
     )
     if target < current:
-        raise AssertionError(
-            f"advance-to target {time} is in the past relative to {current}"
-        )
+        raise AssertionError(f"advance-to target {time} is in the past relative to {current}")
     delta = target - current
     frozen_clock.advance(delta)
     container.clock.advance(delta)
@@ -1911,8 +1994,7 @@ def _assert_session_receives_201_with_lock(world: dict, session_id: str) -> None
     """
     response = world["response"]
     assert response.status_code == 201, (
-        f"expected HTTP 201 for session {session_id}, got "
-        f"{response.status_code}: {response.text}"
+        f"expected HTTP 201 for session {session_id}, got {response.status_code}: {response.text}"
     )
     body = response.json()
     assert body.get("lockId"), f"response missing lockId: {body!r}"
@@ -1920,9 +2002,12 @@ def _assert_session_receives_201_with_lock(world: dict, session_id: str) -> None
 
 # ---- Milestone 07: step 07-02 (commit under lock + concurrent acquire) -----
 
+
 @when(parsers.parse('ten sessions concurrently request a lock on seat "{seat_id}"'))
 def _ten_sessions_concurrent_acquire(
-    client, world: dict, seat_id: str,
+    client,
+    world: dict,
+    seat_id: str,
 ) -> None:
     """Launch ten concurrent ``POST /seat-locks`` requests against the same
     seat, each with a distinct sessionId. Synchronise launch through a
@@ -1959,20 +2044,16 @@ def _assert_exactly_one_winner(world: dict) -> None:
     responses = world["responses"]
     winners = [r for r in responses if r.status_code == 201]
     assert len(winners) == 1, (
-        f"expected exactly 1 winner, got {len(winners)}: "
-        f"{[r.status_code for r in responses]}"
+        f"expected exactly 1 winner, got {len(winners)}: {[r.status_code for r in responses]}"
     )
 
 
-@then(parsers.parse(
-    'the other nine sessions receive HTTP 409 with "{phrase}"'
-))
+@then(parsers.parse('the other nine sessions receive HTTP 409 with "{phrase}"'))
 def _assert_nine_conflicts(world: dict, phrase: str) -> None:
     responses = world["responses"]
     conflicts = [r for r in responses if r.status_code == 409]
     assert len(conflicts) == 9, (
-        f"expected 9 conflicts, got {len(conflicts)}: "
-        f"{[r.status_code for r in responses]}"
+        f"expected 9 conflicts, got {len(conflicts)}: {[r.status_code for r in responses]}"
     )
     for response in conflicts:
         body = response.json()
@@ -1986,17 +2067,20 @@ def _assert_zero_500s(world: dict) -> None:
     responses = world["responses"]
     fails = [r for r in responses if r.status_code >= 500]
     assert len(fails) == 0, (
-        f"expected zero 5xx responses, got {len(fails)}: "
-        f"{[r.status_code for r in fails]}"
+        f"expected zero 5xx responses, got {len(fails)}: {[r.status_code for r in fails]}"
     )
 
 
-@given(parsers.parse(
-    'session "{session_id}" holds a lock on seat "{seat_id}" and '
-    'an associated valid quote'
-))
+@given(
+    parsers.parse(
+        'session "{session_id}" holds a lock on seat "{seat_id}" and an associated valid quote'
+    )
+)
 def _seed_lock_and_quote(
-    client, world: dict, session_id: str, seat_id: str,
+    client,
+    world: dict,
+    session_id: str,
+    seat_id: str,
 ) -> None:
     """Acquire a lock on ``seat_id`` for ``session_id`` AND mint a quote for
     the same seat. Both are driven through real HTTP endpoints so production
@@ -2032,12 +2116,14 @@ def _seed_lock_and_quote(
     world["quote_id"] = quote_response.json()["quoteId"]
 
 
-@given(parsers.parse(
-    'session "{session_id}" holds a valid lock on seat "{seat_id}" and '
-    'a valid quote'
-))
+@given(
+    parsers.parse('session "{session_id}" holds a valid lock on seat "{seat_id}" and a valid quote')
+)
 def _seed_valid_lock_and_valid_quote(
-    client, world: dict, session_id: str, seat_id: str,
+    client,
+    world: dict,
+    session_id: str,
+    seat_id: str,
 ) -> None:
     """Narrative variant of the previous Given — same behaviour. Kept as a
     distinct binding because pytest-bdd matches by exact phrase and the two
@@ -2045,15 +2131,18 @@ def _seed_valid_lock_and_valid_quote(
     valid" vs "a valid").
     """
     _seed_lock_and_quote(
-        client=client, world=world, session_id=session_id, seat_id=seat_id,
+        client=client,
+        world=world,
+        session_id=session_id,
+        seat_id=seat_id,
     )
 
 
-@when(parsers.parse(
-    'session "{session_id}" commits a booking using the expired lock'
-))
+@when(parsers.parse('session "{session_id}" commits a booking using the expired lock'))
 def _commit_with_expired_lock(
-    client, world: dict, session_id: str,
+    client,
+    world: dict,
+    session_id: str,
 ) -> None:
     """POST /bookings carrying the previously-seeded lock_id + session_id.
     The clock has already been advanced past the TTL by the preceding When
@@ -2075,11 +2164,11 @@ def _commit_with_expired_lock(
     )
 
 
-@when(parsers.parse(
-    'session "{session_id}" commits with a paymentToken that the mock rejects'
-))
+@when(parsers.parse('session "{session_id}" commits with a paymentToken that the mock rejects'))
 def _commit_with_rejected_payment(
-    client, world: dict, session_id: str,
+    client,
+    world: dict,
+    session_id: str,
 ) -> None:
     """POST /bookings with ``paymentToken='fail'`` — the MockPaymentGateway
     default decline token. The commit reaches the payment charge after
@@ -2102,11 +2191,11 @@ def _commit_with_rejected_payment(
     )
 
 
-@then(parsers.parse(
-    'the lock on seat "{seat_id}" is still valid when the clock is unchanged'
-))
+@then(parsers.parse('the lock on seat "{seat_id}" is still valid when the clock is unchanged'))
 def _assert_lock_still_valid(
-    container, world: dict, seat_id: str,
+    container,
+    world: dict,
+    seat_id: str,
 ) -> None:
     """Assert the seeded lock is still in the store and unexpired — proving
     the payment-failure branch did NOT release it. Reads the store directly
@@ -2121,7 +2210,8 @@ def _assert_lock_still_valid(
 
 @then(parsers.parse('an audit "{event_type}" event is written'))
 def _assert_audit_event_written(
-    container, event_type: str,
+    container,
+    event_type: str,
 ) -> None:
     """Assert at least one audit event of ``event_type`` was written. Used
     by the payment-failure scenario to confirm the PaymentFailed trail is
@@ -2130,8 +2220,7 @@ def _assert_audit_event_written(
     events = getattr(container.audit, "events", [])
     matching = [e for e in events if e.get("type") == event_type]
     assert matching, (
-        f"expected at least one {event_type} event, got: "
-        f"{[e.get('type') for e in events]}"
+        f"expected at least one {event_type} event, got: {[e.get('type') for e in events]}"
     )
 
 
@@ -2149,10 +2238,12 @@ def _assert_audit_event_written(
 # drifting away from the CLI.
 
 
-@when(parsers.parse(
-    "the race-last-seat harness runs {trials:d} trials, "
-    "each with {threads:d} threads competing for one seat"
-))
+@when(
+    parsers.parse(
+        "the race-last-seat harness runs {trials:d} trials, "
+        "each with {threads:d} threads competing for one seat"
+    )
+)
 def _run_race_harness(world: dict, trials: int, threads: int) -> None:
     """Invoke the race harness in-process and stash the summary.
 
@@ -2160,6 +2251,7 @@ def _run_race_harness(world: dict, trials: int, threads: int) -> None:
     failure at this step rather than at module-load time.
     """
     from scripts.race_last_seat import run_harness
+
     world["race_summary"] = run_harness(trials=trials, threads=threads)
 
 
@@ -2172,8 +2264,7 @@ def _assert_every_trial_perfect(world: dict) -> None:
     summary = world["race_summary"]
     trials = summary["trials"]
     assert summary["total_winners"] == trials, (
-        f"expected {trials} winners (one per trial), got "
-        f"{summary['total_winners']}: {summary!r}"
+        f"expected {trials} winners (one per trial), got {summary['total_winners']}: {summary!r}"
     )
     expected_rejected = trials * 9
     assert summary["total_rejected"] == expected_rejected, (
@@ -2182,9 +2273,7 @@ def _assert_every_trial_perfect(world: dict) -> None:
     )
 
 
-@then(parsers.parse(
-    'over {trials:d} trials, the count of "double-booking" outcomes is {count:d}'
-))
+@then(parsers.parse('over {trials:d} trials, the count of "double-booking" outcomes is {count:d}'))
 def _assert_zero_double_bookings(world: dict, trials: int, count: int) -> None:
     """Assert ``double_bookings`` (any trial with >1 winner) matches the
     feature's promised count — 0. A single double-booking fails KPI-T2 and
@@ -2192,12 +2281,10 @@ def _assert_zero_double_bookings(world: dict, trials: int, count: int) -> None:
     """
     summary = world["race_summary"]
     assert summary["trials"] == trials, (
-        f"harness ran {summary['trials']} trials, feature asserts {trials}: "
-        f"{summary!r}"
+        f"harness ran {summary['trials']} trials, feature asserts {trials}: {summary!r}"
     )
     assert summary["double_bookings"] == count, (
-        f"expected {count} double-bookings, got "
-        f"{summary['double_bookings']}: {summary!r}"
+        f"expected {count} double-bookings, got {summary['double_bookings']}: {summary!r}"
     )
 
 
@@ -2214,13 +2301,13 @@ def _assert_zero_double_bookings(world: dict, trials: int, count: int) -> None:
 # candidates for the scenarios below.
 
 
-@given(parsers.parse(
-    "a seeded catalog with outbound flights on {outbound_date} and "
-    "return flights on {return_date}"
-))
-def _seed_round_trip_catalog(
-    container, outbound_date: str, return_date: str
-) -> None:
+@given(
+    parsers.parse(
+        "a seeded catalog with outbound flights on {outbound_date} and "
+        "return flights on {return_date}"
+    )
+)
+def _seed_round_trip_catalog(container, outbound_date: str, return_date: str) -> None:
     """Background seed for milestone-08 round-trip scenarios.
 
     Loads the full ``seeded_catalog()`` (which now includes NYC→LAX and
@@ -2233,17 +2320,17 @@ def _seed_round_trip_catalog(
     assert outbound_date in dates_present, (
         f"outbound date {outbound_date} not in seeded catalog dates"
     )
-    assert return_date in dates_present, (
-        f"return date {return_date} not in seeded catalog dates"
-    )
+    assert return_date in dates_present, f"return date {return_date} not in seeded catalog dates"
     for flight in flights:
         container.flight_repo.add(flight)
 
 
-@when(parsers.parse(
-    "the traveler searches {origin} to {destination} on {departure_date} "
-    "with returnDate {return_date}"
-))
+@when(
+    parsers.parse(
+        "the traveler searches {origin} to {destination} on {departure_date} "
+        "with returnDate {return_date}"
+    )
+)
 def _http_search_round_trip(
     client,
     world: dict,
@@ -2263,13 +2350,12 @@ def _http_search_round_trip(
     )
 
 
-@when(parsers.parse(
-    "the traveler searches a round-trip on a seeded catalog with "
-    "{count:d} candidate pairs"
-))
-def _http_search_round_trip_paginated(
-    client, container, world: dict, count: int
-) -> None:
+@when(
+    parsers.parse(
+        "the traveler searches a round-trip on a seeded catalog with {count:d} candidate pairs"
+    )
+)
+def _http_search_round_trip_paginated(client, container, world: dict, count: int) -> None:
     """Drive /flights/search with returnDate against a catalog that has at
     least ``count`` outbound×return combinations.
 
@@ -2281,6 +2367,7 @@ def _http_search_round_trip_paginated(
     arriving/departing so the 2h buffer holds.
     """
     from datetime import timedelta
+
     outbound_date = "2026-06-01"
     return_date = "2026-06-08"
     outbound_base = datetime.fromisoformat(f"{outbound_date}T08:00:00+00:00")
@@ -2327,14 +2414,10 @@ def _http_search_round_trip_paginated(
 @then("every result is a pair where return.origin equals outbound.destination")
 def _assert_every_pair_compatible(world: dict) -> None:
     response = world["response"]
-    assert response.status_code == 200, (
-        f"expected 200, got {response.status_code}: {response.text}"
-    )
+    assert response.status_code == 200, f"expected 200, got {response.status_code}: {response.text}"
     body = response.json()
     pairs = body.get("pairs")
-    assert isinstance(pairs, list) and pairs, (
-        f"expected non-empty 'pairs' list, got {body!r}"
-    )
+    assert isinstance(pairs, list) and pairs, f"expected non-empty 'pairs' list, got {body!r}"
     for pair in pairs:
         outbound = pair["outbound"]
         return_leg = pair["return"]
@@ -2347,6 +2430,7 @@ def _assert_every_pair_compatible(world: dict) -> None:
 @then("every pair has return.departure at least 2 hours after outbound.arrival")
 def _assert_two_hour_buffer(world: dict) -> None:
     from datetime import timedelta as _td
+
     response = world["response"]
     body = response.json()
     pairs = body.get("pairs", [])
@@ -2366,10 +2450,11 @@ def _assert_at_most_n_pairs(world: dict, n: int) -> None:
     assert len(pairs) <= n, f"expected at most {n} pairs, got {len(pairs)}"
 
 
-@then(parsers.parse(
-    "pagination metadata reports both pairCount and flightCount "
-    "(flightCount = 2 * pairCount)"
-))
+@then(
+    parsers.parse(
+        "pagination metadata reports both pairCount and flightCount (flightCount = 2 * pairCount)"
+    )
+)
 def _assert_pair_and_flight_counts(world: dict) -> None:
     body = world["response"].json()
     assert "pairCount" in body, f"missing 'pairCount' in body: {body!r}"
@@ -2377,9 +2462,7 @@ def _assert_pair_and_flight_counts(world: dict) -> None:
     pair_count = body["pairCount"]
     flight_count = body["flightCount"]
     assert isinstance(pair_count, int), f"pairCount must be int, got {type(pair_count)}"
-    assert isinstance(flight_count, int), (
-        f"flightCount must be int, got {type(flight_count)}"
-    )
+    assert isinstance(flight_count, int), f"flightCount must be int, got {type(flight_count)}"
     assert flight_count == 2 * pair_count, (
         f"flightCount ({flight_count}) != 2 * pairCount ({pair_count})"
     )
@@ -2399,10 +2482,12 @@ def _assert_pair_and_flight_counts(world: dict) -> None:
 # "every returned flight …" with circular-verification theatre).
 
 
-@when(parsers.parse(
-    'the traveler searches {origin} to {destination} on {departure_date} '
-    'with airline "{airline}"'
-))
+@when(
+    parsers.parse(
+        "the traveler searches {origin} to {destination} on {departure_date} "
+        'with airline "{airline}"'
+    )
+)
 def _http_search_with_airline(
     container,
     client,
@@ -2417,7 +2502,8 @@ def _http_search_with_airline(
     container.flight_repo.add(
         Flight(
             id=FlightId("FL-FILTER-AA"),
-            origin=origin, destination=destination,
+            origin=origin,
+            destination=destination,
             departure_at=departure_base,
             arrival_at=departure_base,
             airline="AA",
@@ -2428,7 +2514,8 @@ def _http_search_with_airline(
     container.flight_repo.add(
         Flight(
             id=FlightId("FL-FILTER-UA"),
-            origin=origin, destination=destination,
+            origin=origin,
+            destination=destination,
             departure_at=departure_base,
             arrival_at=departure_base,
             airline="UA",
@@ -2450,23 +2537,22 @@ def _http_search_with_airline(
 @then(parsers.parse('every returned flight has airline "{airline}"'))
 def _assert_every_flight_has_airline(world: dict, airline: str) -> None:
     response = world["response"]
-    assert response.status_code == 200, (
-        f"expected 200, got {response.status_code}: {response.text}"
-    )
+    assert response.status_code == 200, f"expected 200, got {response.status_code}: {response.text}"
     body = response.json()
     flights = body.get("flights", [])
     assert flights, f"expected non-empty flight list, got {body!r}"
     for flight in flights:
         assert flight["airline"] == airline, (
-            f"flight {flight['id']} has airline {flight['airline']!r}, "
-            f"expected {airline!r}"
+            f"flight {flight['id']} has airline {flight['airline']!r}, expected {airline!r}"
         )
 
 
-@when(parsers.parse(
-    'the traveler searches {origin} to {destination} on {departure_date} '
-    'with minPrice {min_price:d} and maxPrice {max_price:d}'
-))
+@when(
+    parsers.parse(
+        "the traveler searches {origin} to {destination} on {departure_date} "
+        "with minPrice {min_price:d} and maxPrice {max_price:d}"
+    )
+)
 def _http_search_with_price_range(
     container,
     client,
@@ -2484,7 +2570,8 @@ def _http_search_with_price_range(
         container.flight_repo.add(
             Flight(
                 id=FlightId(f"FL-FILTER-{suffix}"),
-                origin=origin, destination=destination,
+                origin=origin,
+                destination=destination,
                 departure_at=departure_base,
                 arrival_at=departure_base,
                 airline="AA",
@@ -2505,9 +2592,9 @@ def _http_search_with_price_range(
     world["last_price_range"] = (min_price, max_price)
 
 
-@then(parsers.parse(
-    "every returned flight's indicative total is between {lo:d} and {hi:d} inclusive"
-))
+@then(
+    parsers.parse("every returned flight's indicative total is between {lo:d} and {hi:d} inclusive")
+)
 def _assert_every_flight_in_price_range(world: dict, lo: int, hi: int) -> None:
     response = world["response"]
     assert response.status_code == 200
@@ -2521,10 +2608,12 @@ def _assert_every_flight_in_price_range(world: dict, lo: int, hi: int) -> None:
         )
 
 
-@when(parsers.parse(
-    'the traveler searches {origin} to {destination} on {departure_date} '
-    'with departureTimeFrom {time_from} and departureTimeTo {time_to}'
-))
+@when(
+    parsers.parse(
+        "the traveler searches {origin} to {destination} on {departure_date} "
+        "with departureTimeFrom {time_from} and departureTimeTo {time_to}"
+    )
+)
 def _http_search_with_time_window(
     container,
     client,
@@ -2537,13 +2626,12 @@ def _http_search_with_time_window(
 ) -> None:
     # Seed three departures: 07:00 (before), 12:00 (inside), 19:00 (after).
     for hhmm, suffix in (("07:00", "EARLY"), ("12:00", "MID"), ("19:00", "LATE")):
-        departure = datetime.fromisoformat(
-            f"{departure_date}T{hhmm}:00+00:00"
-        )
+        departure = datetime.fromisoformat(f"{departure_date}T{hhmm}:00+00:00")
         container.flight_repo.add(
             Flight(
                 id=FlightId(f"FL-TIMEFILTER-{suffix}"),
-                origin=origin, destination=destination,
+                origin=origin,
+                destination=destination,
                 departure_at=departure,
                 arrival_at=departure,
                 airline="AA",
@@ -2564,13 +2652,10 @@ def _http_search_with_time_window(
     world["last_time_window"] = (time_from, time_to)
 
 
-@then(parsers.parse(
-    "every returned flight departs between {time_from} and {time_to} local time"
-))
-def _assert_every_flight_in_time_window(
-    world: dict, time_from: str, time_to: str
-) -> None:
+@then(parsers.parse("every returned flight departs between {time_from} and {time_to} local time"))
+def _assert_every_flight_in_time_window(world: dict, time_from: str, time_to: str) -> None:
     from datetime import time as _time
+
     lo = _time.fromisoformat(time_from)
     hi = _time.fromisoformat(time_to)
     response = world["response"]
@@ -2582,14 +2667,11 @@ def _assert_every_flight_in_time_window(
         departs_at = datetime.fromisoformat(flight["departureAt"])
         depart_time = departs_at.time()
         assert lo <= depart_time <= hi, (
-            f"flight {flight['id']} departs at {depart_time} outside "
-            f"[{lo}, {hi}]"
+            f"flight {flight['id']} departs at {depart_time} outside [{lo}, {hi}]"
         )
 
 
-@when(parsers.parse(
-    'the traveler searches with airline "{airline}" and maxPrice {max_price:d}'
-))
+@when(parsers.parse('the traveler searches with airline "{airline}" and maxPrice {max_price:d}'))
 def _http_search_airline_then_price(
     container,
     client,
@@ -2613,7 +2695,8 @@ def _http_search_airline_then_price(
             container.flight_repo.add(
                 Flight(
                     id=FlightId(flight_id),
-                    origin="LAX", destination="NYC",
+                    origin="LAX",
+                    destination="NYC",
                     departure_at=departure,
                     arrival_at=departure,
                     airline=flight_airline,
@@ -2634,9 +2717,7 @@ def _http_search_airline_then_price(
     )
 
 
-@when(parsers.parse(
-    'the traveler searches with maxPrice {max_price:d} and airline "{airline}"'
-))
+@when(parsers.parse('the traveler searches with maxPrice {max_price:d} and airline "{airline}"'))
 def _http_search_price_then_airline(
     client,
     world: dict,
@@ -2670,8 +2751,7 @@ def _assert_responses_identical(world: dict) -> None:
     ids1 = sorted(f["id"] for f in body1.get("flights", []))
     ids2 = sorted(f["id"] for f in body2.get("flights", []))
     assert ids1 == ids2, (
-        f"filter order affected result set: "
-        f"airline-first={ids1!r} price-first={ids2!r}"
+        f"filter order affected result set: airline-first={ids1!r} price-first={ids2!r}"
     )
     assert body1.get("total") == body2.get("total"), (
         f"total differs: {body1.get('total')!r} vs {body2.get('total')!r}"

@@ -38,9 +38,7 @@ def _make_flight(
 class TestInMemoryFlightRepositoryAddAndGet:
     def test_get_returns_flight_after_add(self) -> None:
         repo = InMemoryFlightRepository()
-        flight = _make_flight(
-            "FL-1", "LAX", "NYC", datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
-        )
+        flight = _make_flight("FL-1", "LAX", "NYC", datetime(2026, 6, 1, 8, 0, tzinfo=UTC))
 
         repo.add(flight)
 
@@ -52,9 +50,7 @@ class TestInMemoryFlightRepositoryAddAndGet:
 
     def test_add_is_idempotent_for_same_id(self) -> None:
         repo = InMemoryFlightRepository()
-        flight = _make_flight(
-            "FL-1", "LAX", "NYC", datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
-        )
+        flight = _make_flight("FL-1", "LAX", "NYC", datetime(2026, 6, 1, 8, 0, tzinfo=UTC))
 
         repo.add(flight)
         repo.add(flight)
@@ -65,9 +61,7 @@ class TestInMemoryFlightRepositoryAddAndGet:
 class TestInMemoryFlightRepositorySearch:
     def test_search_returns_only_flights_matching_origin_destination_and_date(self) -> None:
         repo = InMemoryFlightRepository()
-        match = _make_flight(
-            "FL-MATCH", "LAX", "NYC", datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
-        )
+        match = _make_flight("FL-MATCH", "LAX", "NYC", datetime(2026, 6, 1, 8, 0, tzinfo=UTC))
         wrong_origin = _make_flight(
             "FL-WRONG-O", "SFO", "NYC", datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
         )
@@ -86,10 +80,6 @@ class TestInMemoryFlightRepositorySearch:
 
     def test_search_returns_empty_list_when_no_matches(self) -> None:
         repo = InMemoryFlightRepository()
-        repo.add(
-            _make_flight(
-                "FL-1", "LAX", "NYC", datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
-            )
-        )
+        repo.add(_make_flight("FL-1", "LAX", "NYC", datetime(2026, 6, 1, 8, 0, tzinfo=UTC)))
 
         assert repo.search("SFO", "BOS", "2026-06-01") == []

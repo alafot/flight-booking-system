@@ -51,4 +51,6 @@ class Flight:
         raise AssertionError("Not yet implemented — RED scaffold (Flight.duration_minutes)")
 
     def is_within_two_hours_of_departure(self, now: datetime) -> bool:
-        raise AssertionError("Not yet implemented — RED scaffold (Flight.is_within_two_hours_of_departure)")
+        raise AssertionError(
+            "Not yet implemented — RED scaffold (Flight.is_within_two_hours_of_departure)"
+        )

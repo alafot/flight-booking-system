@@ -37,10 +37,10 @@ class TestMoneyBankersRounding:
         "raw,expected",
         [
             # .5 rounds toward nearest EVEN digit
-            ("299.735", "299.74"),   # 3 is odd → round up to 4 (even)
-            ("299.745", "299.74"),   # 4 is even → stays at 4
-            ("299.755", "299.76"),   # 5 is odd → round up to 6 (even)
-            ("299.765", "299.76"),   # 6 is even → stays at 6
+            ("299.735", "299.74"),  # 3 is odd → round up to 4 (even)
+            ("299.745", "299.74"),  # 4 is even → stays at 4
+            ("299.755", "299.76"),  # 5 is odd → round up to 6 (even)
+            ("299.765", "299.76"),  # 6 is even → stays at 6
             # plain truncation cases
             ("299.731", "299.73"),
             ("299.739", "299.74"),

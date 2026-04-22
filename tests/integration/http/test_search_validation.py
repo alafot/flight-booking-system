@@ -149,9 +149,9 @@ class TestSearchInputValidation:
         ],
     )
     def test_invalid_input_returns_400_with_error_for_field(
-        self, client: TestClient, field: str, bad_value: object
+        self, client: TestClient, field: str, bad_value: str | int
     ) -> None:
-        params: dict[str, object] = {
+        params: dict[str, str | int | float | bool | None] = {
             "origin": "LAX",
             "destination": "NYC",
             "departureDate": "2026-06-01",
@@ -162,13 +162,10 @@ class TestSearchInputValidation:
         response = client.get("/flights/search", params=params)
 
         assert response.status_code == 400, (
-            f"expected 400 for {field}={bad_value!r}, got {response.status_code}: "
-            f"{response.text}"
+            f"expected 400 for {field}={bad_value!r}, got {response.status_code}: {response.text}"
         )
         body = response.json()
-        assert isinstance(body.get("errors"), list), (
-            f"expected 'errors' list in body, got {body!r}"
-        )
+        assert isinstance(body.get("errors"), list), f"expected 'errors' list in body, got {body!r}"
         reported_fields = [e.get("field") for e in body["errors"]]
         assert field in reported_fields, (
             f"expected error for field {field!r}, got {reported_fields!r}"

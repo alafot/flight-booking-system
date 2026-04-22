@@ -84,6 +84,4 @@ def test_pricing_module_has_no_clock_or_random_imports() -> None:
                 top = node.module.split(".")[0]
                 if top in forbidden:
                     found.add(top)
-    assert not found, (
-        f"pricing.py must not import {forbidden}; found {found} (ADR-005)"
-    )
+    assert not found, f"pricing.py must not import {forbidden}; found {found} (ADR-005)"

@@ -138,20 +138,36 @@ class TestPriceRangeFilter:
         outbound_dep = datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
         return_dep = datetime(2026, 6, 8, 14, 0, tzinfo=UTC)
         _add_flight(
-            container, flight_id="OUT-CHEAP", fare="150",
-            origin="LAX", destination="NYC", departure=outbound_dep,
+            container,
+            flight_id="OUT-CHEAP",
+            fare="150",
+            origin="LAX",
+            destination="NYC",
+            departure=outbound_dep,
         )
         _add_flight(
-            container, flight_id="OUT-MID", fare="300",
-            origin="LAX", destination="NYC", departure=outbound_dep,
+            container,
+            flight_id="OUT-MID",
+            fare="300",
+            origin="LAX",
+            destination="NYC",
+            departure=outbound_dep,
         )
         _add_flight(
-            container, flight_id="RET-CHEAP", fare="150",
-            origin="NYC", destination="LAX", departure=return_dep,
+            container,
+            flight_id="RET-CHEAP",
+            fare="150",
+            origin="NYC",
+            destination="LAX",
+            departure=return_dep,
         )
         _add_flight(
-            container, flight_id="RET-MID", fare="300",
-            origin="NYC", destination="LAX", departure=return_dep,
+            container,
+            flight_id="RET-MID",
+            fare="300",
+            origin="NYC",
+            destination="LAX",
+            departure=return_dep,
         )
 
         response = client.get(
@@ -182,20 +198,21 @@ class TestPriceRangeFilter:
 class TestDepartureTimeWindowFilter:
     """Inclusive HH:MM departure-time window filter."""
 
-    def test_departure_time_window_filter(
-        self, client: TestClient, container: Container
-    ) -> None:
+    def test_departure_time_window_filter(self, client: TestClient, container: Container) -> None:
         # Three departures: 07:00 (before), 12:00 (inside), 19:00 (after).
         _add_flight(
-            container, flight_id="FL-EARLY",
+            container,
+            flight_id="FL-EARLY",
             departure=datetime(2026, 6, 1, 7, 0, tzinfo=UTC),
         )
         _add_flight(
-            container, flight_id="FL-MID",
+            container,
+            flight_id="FL-MID",
             departure=datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
         )
         _add_flight(
-            container, flight_id="FL-LATE",
+            container,
+            flight_id="FL-LATE",
             departure=datetime(2026, 6, 1, 19, 0, tzinfo=UTC),
         )
 

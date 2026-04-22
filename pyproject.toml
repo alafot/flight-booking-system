@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.21.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flights"
+version = "0.0.1"
+description = "Flight Booking System — nWave reference implementation"
+readme = "CLAUDE.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "pydantic>=2.5",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-bdd>=7.0",
+    "httpx>=0.27",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "pre-commit>=3.7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flights"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "walking_skeleton: the single end-to-end scenario that proves the stack",
+    "real_io: exercises real adapters (real HTTP, real files under tmp_path)",
+    "in_memory: uses InMemory doubles only",
+    "adapter_integration: dedicated driven-adapter integration test",
+    "pending: scenario is written but not yet enabled; DELIVER enables one at a time",
+    "requires_external: needs an external system; skipped if absent",
+    "driving_adapter: invokes the user-facing entry point via its real protocol",
+    "kpi: scenario maps to an outcome KPI",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+exclude = ["tests/acceptance/flight-booking-system/"]

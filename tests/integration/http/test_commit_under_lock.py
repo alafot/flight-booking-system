@@ -27,6 +27,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flights.adapters.http.app import create_app
+from flights.adapters.mocks.clock import FrozenClock
 from flights.composition.wire import Container, build_test_container
 from flights.domain.model.flight import Cabin, Flight
 from flights.domain.model.ids import FlightId, SeatId
@@ -145,6 +146,7 @@ class TestCommitWithExpiredLock:
         lock_id = _acquire_lock(client, session_id="S1")
 
         # Advance past TTL (10 minutes + 1).
+        assert isinstance(container.clock, FrozenClock)
         container.clock.advance(timedelta(minutes=11))
 
         response = client.post(
@@ -163,7 +165,8 @@ class TestCommitWithUnknownLock:
         response = client.post(
             "/bookings",
             json=_commit_payload(
-                lock_id="LOCK-NEVER-ISSUED", session_id="S1",
+                lock_id="LOCK-NEVER-ISSUED",
+                session_id="S1",
             ),
         )
 
@@ -204,7 +207,9 @@ class TestCommitPaymentFailurePreservesLock:
         response = client.post(
             "/bookings",
             json=_commit_payload(
-                lock_id=lock_id, session_id="S1", payment_token="fail",
+                lock_id=lock_id,
+                session_id="S1",
+                payment_token="fail",
             ),
         )
 

@@ -140,9 +140,7 @@ class SearchService:
         branch belongs to ``search``.
         """
         if request.return_date is None:
-            raise ValueError(
-                "search_round_trip requires return_date; use search for one-way"
-            )
+            raise ValueError("search_round_trip requires return_date; use search for one-way")
         outbounds = self._flights.search(
             origin=request.origin,
             destination=request.destination,
@@ -159,14 +157,11 @@ class SearchService:
             FlightPair(
                 outbound=outbound,
                 return_flight=return_flight,
-                total_indicative_price=(
-                    outbound.base_fare + return_flight.base_fare
-                ),
+                total_indicative_price=(outbound.base_fare + return_flight.base_fare),
             )
             for outbound in outbounds
             for return_flight in returns
-            if return_flight.departure_at
-            >= outbound.arrival_at + MINIMUM_LAYOVER
+            if return_flight.departure_at >= outbound.arrival_at + MINIMUM_LAYOVER
         ]
         # Step 08-02: post-pair filters. Price filter applies to the
         # pair's ``total_indicative_price`` (the indicative total the
@@ -180,10 +175,10 @@ class SearchService:
             max_price=request.max_price,
             price_of=lambda pair: pair.total_indicative_price.amount,
         )
-        if request.departure_time_from is not None or \
-                request.departure_time_to is not None:
+        if request.departure_time_from is not None or request.departure_time_to is not None:
             eligible = [
-                pair for pair in eligible
+                pair
+                for pair in eligible
                 if _is_within_time_window(
                     pair.outbound.departure_at.time(),
                     request.departure_time_from,
@@ -219,6 +214,7 @@ def _apply_price_filter[T](
     """
     if min_price is None and max_price is None:
         return items
+
     def in_range(item: T) -> bool:
         price = price_of(item)
         if min_price is not None and price < min_price:
@@ -226,6 +222,7 @@ def _apply_price_filter[T](
         if max_price is not None and price > max_price:
             return False
         return True
+
     return [item for item in items if in_range(item)]
 
 
@@ -244,15 +241,20 @@ def _apply_time_window_filter(
     if time_from is None and time_to is None:
         return flights
     return [
-        flight for flight in flights
+        flight
+        for flight in flights
         if _is_within_time_window(
-            flight.departure_at.time(), time_from, time_to,
+            flight.departure_at.time(),
+            time_from,
+            time_to,
         )
     ]
 
 
 def _is_within_time_window(
-    candidate: time, time_from: time | None, time_to: time | None,
+    candidate: time,
+    time_from: time | None,
+    time_to: time | None,
 ) -> bool:
     if time_from is not None and candidate < time_from:
         return False

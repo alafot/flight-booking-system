@@ -89,7 +89,10 @@ class SeatMapService:
                 seat_class=seat.seat_class,
                 kind=seat.kind,
                 status=self._status_for(
-                    seat.status, seat.id, occupied_ids, locked_to_other,
+                    seat.status,
+                    seat.id,
+                    occupied_ids,
+                    locked_to_other,
                 ),
             )
             for seat in self._ordered_seats(flight)
@@ -106,7 +109,9 @@ class SeatMapService:
         return frozenset(occupied)
 
     def _seats_locked_against_session(
-        self, flight: Flight, session_id: SessionId | None,
+        self,
+        flight: Flight,
+        session_id: SessionId | None,
     ) -> frozenset[SeatId]:
         """Return the set of seats the requester must see as OCCUPIED because
         a *different* session holds a live lock on them.
@@ -148,6 +153,4 @@ class SeatMapService:
 
     @staticmethod
     def _ordered_seats(flight: Flight) -> tuple:
-        return tuple(
-            sorted(flight.cabin.seats.values(), key=lambda seat: _row_column(seat.id))
-        )
+        return tuple(sorted(flight.cabin.seats.values(), key=lambda seat: _row_column(seat.id)))

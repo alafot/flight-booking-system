@@ -92,9 +92,7 @@ def verify_commits(events: list[dict]) -> list[ReplayMismatch]:
       used for the pre-tax subset (milestone-04 scenarios).
     """
     quotes_by_id = {
-        event["quote_id"]: event
-        for event in events
-        if event.get("type") == "QuoteCreated"
+        event["quote_id"]: event for event in events if event.get("type") == "QuoteCreated"
     }
     mismatches: list[ReplayMismatch] = []
     for event in events:
@@ -119,10 +117,7 @@ def verify_commits(events: list[dict]) -> list[ReplayMismatch]:
             mismatches.append(
                 ReplayMismatch(
                     booking_reference=booking_reference,
-                    reason=(
-                        f"quoted={quoted_total} "
-                        f"charged={charged}"
-                    ),
+                    reason=(f"quoted={quoted_total} charged={charged}"),
                 )
             )
     return mismatches

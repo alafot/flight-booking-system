@@ -39,12 +39,12 @@ class DayOfWeek(IntEnum):
 # The final bucket [96, ∞) uses Decimal("Infinity") so the lookup cannot fall
 # off the end for any valid occupancy (0..100).
 DEMAND_TABLE: tuple[tuple[Decimal, Decimal], ...] = (
-    (Decimal("31"), Decimal("1.00")),   # [0, 31)
-    (Decimal("51"), Decimal("1.15")),   # [31, 51)
-    (Decimal("71"), Decimal("1.35")),   # [51, 71)
-    (Decimal("86"), Decimal("1.60")),   # [71, 86)
-    (Decimal("96"), Decimal("2.00")),   # [86, 96)
-    (Decimal("Infinity"), Decimal("2.50")),   # [96, ∞)
+    (Decimal("31"), Decimal("1.00")),  # [0, 31)
+    (Decimal("51"), Decimal("1.15")),  # [31, 51)
+    (Decimal("71"), Decimal("1.35")),  # [51, 71)
+    (Decimal("86"), Decimal("1.60")),  # [71, 86)
+    (Decimal("96"), Decimal("2.00")),  # [86, 96)
+    (Decimal("Infinity"), Decimal("2.50")),  # [96, ∞)
 )
 
 # --- Appendix B: time-to-departure multipliers -------------------------------
@@ -54,10 +54,10 @@ DEMAND_TABLE: tuple[tuple[Decimal, Decimal], ...] = (
 TIME_TABLE: tuple[tuple[int, Decimal], ...] = (
     (60, Decimal("0.85")),  # ≥ 60 days
     (21, Decimal("0.90")),  # 21..59
-    (7,  Decimal("1.00")),  # 7..20
-    (3,  Decimal("1.20")),  # 3..6
-    (1,  Decimal("1.50")),  # 1..2
-    (0,  Decimal("2.00")),  # 0 (same day)
+    (7, Decimal("1.00")),  # 7..20
+    (3, Decimal("1.20")),  # 3..6
+    (1, Decimal("1.50")),  # 1..2
+    (0, Decimal("2.00")),  # 0 (same day)
 )
 
 # --- Appendix B: day-of-week multipliers -------------------------------------
@@ -88,21 +88,21 @@ DOW_TABLE: dict[DayOfWeek, Decimal] = {
 #     (SeatClass.PREMIUM_ECONOMY, SeatKind.WINDOW):     Money.of("30"),
 SURCHARGES: dict[tuple[SeatClass, SeatKind], Money] = {
     # Economy
-    (SeatClass.ECONOMY,  SeatKind.STANDARD):      Money.of("0"),
-    (SeatClass.ECONOMY,  SeatKind.EXIT_ROW):      Money.of("35"),
-    (SeatClass.ECONOMY,  SeatKind.FRONT_SECTION): Money.of("25"),
-    (SeatClass.ECONOMY,  SeatKind.AISLE):         Money.of("15"),
-    (SeatClass.ECONOMY,  SeatKind.WINDOW):        Money.of("15"),
-    (SeatClass.ECONOMY,  SeatKind.MIDDLE):        Money.of("-5"),
+    (SeatClass.ECONOMY, SeatKind.STANDARD): Money.of("0"),
+    (SeatClass.ECONOMY, SeatKind.EXIT_ROW): Money.of("35"),
+    (SeatClass.ECONOMY, SeatKind.FRONT_SECTION): Money.of("25"),
+    (SeatClass.ECONOMY, SeatKind.AISLE): Money.of("15"),
+    (SeatClass.ECONOMY, SeatKind.WINDOW): Money.of("15"),
+    (SeatClass.ECONOMY, SeatKind.MIDDLE): Money.of("-5"),
     # Business
-    (SeatClass.BUSINESS, SeatKind.STANDARD):       Money.of("0"),
+    (SeatClass.BUSINESS, SeatKind.STANDARD): Money.of("0"),
     (SeatClass.BUSINESS, SeatKind.LIE_FLAT_SUITE): Money.of("200"),
-    (SeatClass.BUSINESS, SeatKind.WINDOW_SUITE):   Money.of("100"),
-    (SeatClass.BUSINESS, SeatKind.AISLE_ACCESS):   Money.of("75"),
+    (SeatClass.BUSINESS, SeatKind.WINDOW_SUITE): Money.of("100"),
+    (SeatClass.BUSINESS, SeatKind.AISLE_ACCESS): Money.of("75"),
     # First
-    (SeatClass.FIRST,    SeatKind.STANDARD):      Money.of("0"),
-    (SeatClass.FIRST,    SeatKind.PRIVATE_SUITE): Money.of("500"),
-    (SeatClass.FIRST,    SeatKind.FRONT_ROW):     Money.of("150"),
+    (SeatClass.FIRST, SeatKind.STANDARD): Money.of("0"),
+    (SeatClass.FIRST, SeatKind.PRIVATE_SUITE): Money.of("500"),
+    (SeatClass.FIRST, SeatKind.FRONT_ROW): Money.of("150"),
 }
 
 # --- Step 05-02: taxes and fees ---------------------------------------------
@@ -111,7 +111,7 @@ SURCHARGES: dict[tuple[SeatClass, SeatKind], Money] = {
 # Per-jurisdiction rates are deferred; the dict shape generalises to that
 # future state without a schema change.
 TAX_RATES: dict[RouteKind, Decimal] = {
-    RouteKind.DOMESTIC:      Decimal("0.075"),
+    RouteKind.DOMESTIC: Decimal("0.075"),
     RouteKind.INTERNATIONAL: Decimal("0.12"),
 }
 
@@ -147,9 +147,7 @@ def _time_multiplier(days_before_departure: int) -> Decimal:
     for lower_inclusive, multiplier in TIME_TABLE:
         if days_before_departure >= lower_inclusive:
             return multiplier
-    raise AssertionError(
-        f"no time bucket for days_before_departure={days_before_departure}"
-    )
+    raise AssertionError(f"no time bucket for days_before_departure={days_before_departure}")
 
 
 def _day_multiplier(dow: DayOfWeek) -> Decimal:

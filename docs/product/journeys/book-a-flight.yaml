@@ -1,0 +1,133 @@
+# SSOT Journey: Book a Flight
+# This is the canonical journey schema for the product. Feature-scoped deltas live under
+# docs/feature/{id}/discuss/journey-*.yaml and may extend or refine this journey.
+
+schema_version: "0.1"
+id: journey.book-a-flight
+name: "Book a flight"
+primary_actor: traveler
+jobs:
+  - job.find-flight
+  - job.pick-seat
+  - job.know-the-price
+  - job.commit-booking
+
+goal: "Commit to a specific flight, on a specific seat, at a price I understood in advance, and walk away with a booking reference I can trust."
+
+entry_preconditions:
+  - "Traveler knows origin, destination, and at least a departure date."
+  - "Traveler has passenger details for everyone in the booking (name, DOB, passport if international)."
+
+exit_postconditions_success:
+  - "Booking exists with status=CONFIRMED and a unique reference number."
+  - "Chosen seat(s) are bound to the booking and no longer sellable."
+  - "Payment (mock) succeeded; an audit record of the pricing decision was written."
+  - "A confirmation email (mock) was queued."
+
+steps:
+  - id: step.search
+    name: "Search for flights"
+    actor_action: "Issues a search with origin, destination, departureDate (and optionally returnDate, passengers, class)."
+    system_response: "Returns paginated list (≤20/page) of matching flights with duration, stops, layovers, and an indicative price per passenger."
+    produces:
+      - "${flightOptions} (array of FlightOffer)"
+    consumes: []
+    failure_modes:
+      - "No flights found for the route/date → empty result, 200 OK."
+      - "Invalid origin/destination/date → 400 with field-level error."
+
+  - id: step.inspect-seats
+    name: "Inspect seat availability"
+    actor_action: "Picks a flight and requests its seat map."
+    system_response: "Returns the 30×6 cabin layout with per-seat status (available|occupied|blocked), seat class, and seat-level surcharge from Appendix A."
+    produces:
+      - "${seatMap} (cabin snapshot with surcharges)"
+    consumes:
+      - "${flightId}"
+    failure_modes:
+      - "Flight not found → 404."
+      - "Flight already departed or within 2h of departure → 409 (not bookable)."
+
+  - id: step.quote-price
+    name: "Get a price quote"
+    actor_action: "Selects seat(s) and passenger count; asks for a price quote."
+    system_response: "Returns a priced quote: base fare × demand × time × day multipliers (Appendix B), plus seat surcharges (Appendix A), taxes, fees, applicable discounts. Quote ID valid for 30 minutes."
+    produces:
+      - "${quoteId}"
+      - "${priceBreakdown} (base|taxes|fees|total|currency|quoteExpiry)"
+      - "audit log entry keyed by quoteId"
+    consumes:
+      - "${flightId}"
+      - "${selectedSeats}"
+      - "${passengers}"
+    failure_modes:
+      - "Selected seat no longer available → 409 with alternatives."
+      - "Flight now 95%+ full → 423 (sales closed per operational rule 4)."
+
+  - id: step.hold-seats
+    name: "Hold the seats"
+    actor_action: "Begins the booking flow; system locks selected seats to this session."
+    system_response: "Seats locked for 10 minutes; lock reference returned. If locks expire, seats return to AVAILABLE and the booking cannot proceed on those seats."
+    produces:
+      - "${seatLock} (lockId, expiresAt)"
+    consumes:
+      - "${selectedSeats}"
+    failure_modes:
+      - "One or more seats already locked/occupied → 409 with which seats conflict."
+
+  - id: step.commit
+    name: "Commit the booking"
+    actor_action: "Submits passenger details and payment (mock) referencing the quoteId and seatLock."
+    system_response: "Transactionally: validates passenger data, charges mock payment, converts seat lock into booked seats, creates Booking (status=CONFIRMED), generates reference, queues confirmation email, writes audit record."
+    produces:
+      - "${bookingReference}"
+      - "Booking record (status=CONFIRMED)"
+      - "confirmation email (mock, queued)"
+    consumes:
+      - "${quoteId}"
+      - "${seatLock}"
+      - "${passengerDetails}"
+      - "${paymentToken} (mock)"
+    failure_modes:
+      - "Quote expired → 410 Gone, traveler must re-quote."
+      - "Seat lock expired → 410 Gone, must re-hold seats."
+      - "Payment fails → 402, lock remains until its TTL so traveler can retry."
+      - "Validation fails (e.g., passport missing on international) → 422 with field errors."
+
+  - id: step.manage
+    name: "Manage the booking post-commit"
+    actor_action: "Views the booking, modifies it, or cancels it."
+    system_response: "Returns booking state; applies modification rules (seat change allowed up to 24h before departure); applies cancellation fees per window (>24h: 10%, 2–24h: 50%, <2h: 100%)."
+    produces:
+      - "updated Booking and, on cancel, refund breakdown with audit record"
+    consumes:
+      - "${bookingReference}"
+    failure_modes:
+      - "Booking not found → 404."
+      - "Modification not permitted by rule → 409 with reason."
+
+emotional_arc:
+  - step: step.search
+    emotion: curious
+    confidence: "low→medium"
+    note: "Shopping mode: lots of options, haven't committed yet."
+  - step: step.inspect-seats
+    emotion: engaged
+    confidence: "medium"
+    note: "Now picturing themselves on the flight; care about the specific seat."
+  - step: step.quote-price
+    emotion: cautious
+    confidence: "medium"
+    note: "Crux moment — price must match expectation or trust breaks."
+  - step: step.hold-seats
+    emotion: committed
+    confidence: "medium→high"
+    note: "Mentally booked; ticking clock (10 min) adds urgency."
+  - step: step.commit
+    emotion: relieved
+    confidence: "high"
+    note: "Money moved; reference number is the receipt that makes it real."
+  - step: step.manage
+    emotion: "context-dependent"
+    confidence: "high (if rules are clear)"
+    note: "Change/cancel must feel predictable or trust erodes."

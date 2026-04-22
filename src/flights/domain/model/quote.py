@@ -58,10 +58,7 @@ class PriceBreakdown:
         )
         for line in self.seat_surcharges:
             if line.amount.currency != currency:
-                raise ValueError(
-                    f"surcharge currency {line.amount.currency} != "
-                    f"base {currency}"
-                )
+                raise ValueError(f"surcharge currency {line.amount.currency} != base {currency}")
             raw += line.amount.amount
         if self.taxes.currency != currency:
             raise ValueError(f"taxes currency {self.taxes.currency} != base {currency}")
@@ -71,9 +68,7 @@ class PriceBreakdown:
         raw += self.fees.amount
 
         rounded = _round_half_even_to_prior_digit(raw)
-        return Money(
-            rounded.quantize(MONEY_QUANT, rounding=ROUND_HALF_EVEN), currency
-        )
+        return Money(rounded.quantize(MONEY_QUANT, rounding=ROUND_HALF_EVEN), currency)
 
 
 def _round_half_even_to_prior_digit(raw: Decimal) -> Decimal:

@@ -29,6 +29,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flights.adapters.http.app import create_app
+from flights.adapters.mocks.audit import InMemoryAuditLog
+from flights.adapters.mocks.clock import FrozenClock
 from flights.composition.wire import Container, build_test_container
 from flights.domain.model.flight import Cabin, Flight
 from flights.domain.model.ids import FlightId, SeatId
@@ -61,9 +63,7 @@ def _make_cabin(*, blocked_count: int = 0) -> Cabin:
     )
     for index in range(1, _CABIN_SIZE):
         seat_id = SeatId(f"FILL-{index:03d}")
-        status = (
-            SeatStatus.BLOCKED if index <= blocked_count else SeatStatus.AVAILABLE
-        )
+        status = SeatStatus.BLOCKED if index <= blocked_count else SeatStatus.AVAILABLE
         cabin.seats[seat_id] = Seat(
             id=seat_id,
             seat_class=SeatClass.ECONOMY,
@@ -73,9 +73,7 @@ def _make_cabin(*, blocked_count: int = 0) -> Cabin:
     return cabin
 
 
-def _seed_flight(
-    container: Container, *, base_fare: str = "299", blocked_count: int = 0
-) -> None:
+def _seed_flight(container: Container, *, base_fare: str = "299", blocked_count: int = 0) -> None:
     flight = Flight(
         id=FlightId(_FLIGHT_ID),
         origin="LAX",
@@ -133,9 +131,7 @@ class TestCommitWithValidQuote:
         quote_total = quote_body["total"]
 
         # Commit well within TTL (no clock advance needed).
-        booking = client.post(
-            "/bookings", json=_booking_payload(quote_id=quote_id)
-        )
+        booking = client.post("/bookings", json=_booking_payload(quote_id=quote_id))
 
         assert booking.status_code == 201, booking.text
         body = booking.json()
@@ -154,11 +150,10 @@ class TestCommitExpiredOrUnknownQuote:
 
         # Advance the frozen clock past the 30-minute window (31 minutes is
         # strictly > expires_at for a half-open TTL window).
+        assert isinstance(container.clock, FrozenClock)
         container.clock.advance(timedelta(minutes=31))
 
-        response = client.post(
-            "/bookings", json=_booking_payload(quote_id=quote_id)
-        )
+        response = client.post("/bookings", json=_booking_payload(quote_id=quote_id))
 
         assert response.status_code == 410, response.text
         assert "quote expired" in response.text
@@ -166,9 +161,7 @@ class TestCommitExpiredOrUnknownQuote:
     def test_commit_with_unknown_quote_id_returns_404(
         self, client: TestClient, container: Container
     ) -> None:
-        response = client.post(
-            "/bookings", json=_booking_payload(quote_id="Q-DOES-NOT-EXIST")
-        )
+        response = client.post("/bookings", json=_booking_payload(quote_id="Q-DOES-NOT-EXIST"))
 
         assert response.status_code == 404, response.text
         assert "quote not found" in response.text
@@ -189,9 +182,8 @@ class TestCommitBackwardCompatibility:
         assert body["totalCharged"]["amount"] == "299.00"
         # Sentinel event was still written — the audit trail never drops a
         # BookingCommitted.
-        events = [
-            e for e in container.audit.events if e.get("type") == "BookingCommitted"
-        ]
+        assert isinstance(container.audit, InMemoryAuditLog)
+        events = [e for e in container.audit.events if e.get("type") == "BookingCommitted"]
         assert len(events) == 1
         assert events[0]["quote_id"] == "Q000-WS"
         assert events[0]["total_charged"] == "299.00"
@@ -237,6 +229,7 @@ class TestKpiT1DemandJumpDoesNotRecomputeTotal:
             flipped += 1
 
         # Advance the clock INSIDE the 30-minute window.
+        assert isinstance(container.clock, FrozenClock)
         container.clock.advance(timedelta(minutes=20))
 
         # Compute what a naive re-price would charge (demand multiplier
@@ -250,9 +243,7 @@ class TestKpiT1DemandJumpDoesNotRecomputeTotal:
         )
 
         # Commit with the ORIGINAL quote id.
-        booking = client.post(
-            "/bookings", json=_booking_payload(quote_id=quote_id)
-        )
+        booking = client.post("/bookings", json=_booking_payload(quote_id=quote_id))
 
         assert booking.status_code == 201, booking.text
         charged = Decimal(booking.json()["totalCharged"]["amount"])
@@ -263,9 +254,8 @@ class TestKpiT1DemandJumpDoesNotRecomputeTotal:
             f"naive-repriced={repriced_total}"
         )
         # Audit trail reflects the locked total too (not a recomputation).
-        booked_events = [
-            e for e in container.audit.events if e.get("type") == "BookingCommitted"
-        ]
+        assert isinstance(container.audit, InMemoryAuditLog)
+        booked_events = [e for e in container.audit.events if e.get("type") == "BookingCommitted"]
         assert len(booked_events) == 1
         assert booked_events[0]["quote_id"] == quote_id
         assert Decimal(booked_events[0]["total_charged"]) == locked_total
@@ -285,11 +275,10 @@ class TestAuditReplayAfterStep0603:
         assert quote.status_code == 200
         quote_id = quote.json()["quoteId"]
 
-        booking = client.post(
-            "/bookings", json=_booking_payload(quote_id=quote_id)
-        )
+        booking = client.post("/bookings", json=_booking_payload(quote_id=quote_id))
         assert booking.status_code == 201
 
+        assert isinstance(container.audit, InMemoryAuditLog)
         events = list(container.audit.events)
         # There is one non-WS BookingCommitted event with a real quote id.
         booked = [e for e in events if e.get("type") == "BookingCommitted"]

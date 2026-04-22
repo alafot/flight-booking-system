@@ -120,9 +120,7 @@ def breakdown_client() -> TestClient:
     flight — empty Tuesday flight, 30 days out, STANDARD seat (no surcharge).
     """
     now = datetime(2026, 5, 3, 10, 0, tzinfo=UTC)
-    container = build_test_container(
-        now=now, audit_path=None, deterministic_ids=True
-    )
+    container = build_test_container(now=now, audit_path=None, deterministic_ids=True)
     _seed_tuesday_empty_flight(container)
     return TestClient(create_app(container=container))
 
@@ -134,9 +132,7 @@ def breakdown_client_with_surcharge() -> TestClient:
     the surcharge branch of the arithmetic-reconstruction assertion.
     """
     now = datetime(2026, 5, 3, 10, 0, tzinfo=UTC)
-    container = build_test_container(
-        now=now, audit_path=None, deterministic_ids=True
-    )
+    container = build_test_container(now=now, audit_path=None, deterministic_ids=True)
     _seed_tuesday_empty_flight(
         container,
         flight_id="FL-BREAKDOWN-EXIT",
@@ -239,9 +235,7 @@ class TestQuoteResponseMoneyFormatting:
         assert _TWO_DECIMAL_PATTERN.fullmatch(value), (
             f"{field!r} = {value!r} does not match NN.DD 2dp format"
         )
-        assert "e" not in value.lower(), (
-            f"{field!r} must not use scientific notation: {value!r}"
-        )
+        assert "e" not in value.lower(), f"{field!r} must not use scientific notation: {value!r}"
 
     def test_seat_surcharge_amounts_are_two_decimal_strings(
         self, breakdown_client_with_surcharge: TestClient
@@ -258,9 +252,7 @@ class TestQuoteResponseMoneyFormatting:
 class TestQuoteResponseMoneyRoundTrip:
     """AC3: parsing any money string back via Decimal yields the same value."""
 
-    def test_money_values_round_trip_through_decimal(
-        self, breakdown_client: TestClient
-    ) -> None:
+    def test_money_values_round_trip_through_decimal(self, breakdown_client: TestClient) -> None:
         body = _quote_appendix_b_example_1(breakdown_client)
         for field in _MONEY_FIELDS:
             value = body[field]
@@ -270,8 +262,7 @@ class TestQuoteResponseMoneyRoundTrip:
             # used ``float(...)`` anywhere, trailing zeros would drop and
             # this equality would fail.
             assert str(parsed) == value, (
-                f"{field!r} round-trip mismatch: "
-                f"str(Decimal({value!r})) = {str(parsed)!r}"
+                f"{field!r} round-trip mismatch: str(Decimal({value!r})) = {str(parsed)!r}"
             )
 
 
@@ -295,9 +286,7 @@ class TestQuoteTotalReproducibleOnPaper:
             time_multiplier=Decimal(body["timeMultiplier"]),
             day_multiplier=Decimal(body["dayMultiplier"]),
             seat_surcharges=tuple(
-                SeatSurchargeLine(
-                    seat=SeatId(line["seat"]), amount=Money.of(line["amount"])
-                )
+                SeatSurchargeLine(seat=SeatId(line["seat"]), amount=Money.of(line["amount"]))
                 for line in body["seatSurcharges"]
             ),
             taxes=Money.of(body["taxes"]),

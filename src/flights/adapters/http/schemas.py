@@ -180,17 +180,11 @@ class SearchQueryParams(BaseModel):
     the legacy one-way shape is preserved for backwards compatibility.
     """
 
-    origin: Annotated[
-        str, Field(min_length=3, max_length=3, pattern=IATA_PATTERN)
-    ]
-    destination: Annotated[
-        str, Field(min_length=3, max_length=3, pattern=IATA_PATTERN)
-    ]
+    origin: Annotated[str, Field(min_length=3, max_length=3, pattern=IATA_PATTERN)]
+    destination: Annotated[str, Field(min_length=3, max_length=3, pattern=IATA_PATTERN)]
     departure_date: date_type
     return_date: date_type | None = None
-    passengers: Annotated[
-        int, Field(ge=MIN_PASSENGERS, le=MAX_PASSENGERS)
-    ] = 1
+    passengers: Annotated[int, Field(ge=MIN_PASSENGERS, le=MAX_PASSENGERS)] = 1
     seat_class: SeatClass | None = None
     page: Annotated[int, Field(ge=1)] = 1
     size: Annotated[int, Field(ge=1)] = MAX_PAGE_SIZE
@@ -200,9 +194,7 @@ class SearchQueryParams(BaseModel):
     # ``departure_time_from``/``_to`` bound the OUTBOUND departure's local
     # time (HH:MM) inclusively — for round-trip queries the rule applies
     # to the outbound leg only (see ADR-007).
-    airline: Annotated[
-        str | None, Field(default=None, min_length=2, max_length=3)
-    ] = None
+    airline: Annotated[str | None, Field(default=None, min_length=2, max_length=3)] = None
     min_price: Annotated[Decimal | None, Field(default=None, ge=0)] = None
     max_price: Annotated[Decimal | None, Field(default=None, ge=0)] = None
     departure_time_from: time_type | None = None
@@ -217,9 +209,7 @@ class SearchQueryParams(BaseModel):
 
 def search_query_params(
     origin: Annotated[str, Query(min_length=3, max_length=3, pattern=IATA_PATTERN)],
-    destination: Annotated[
-        str, Query(min_length=3, max_length=3, pattern=IATA_PATTERN)
-    ],
+    destination: Annotated[str, Query(min_length=3, max_length=3, pattern=IATA_PATTERN)],
     departureDate: Annotated[date_type, Query()],  # noqa: N803 — camelCase at wire
     returnDate: Annotated[date_type | None, Query()] = None,  # noqa: N803
     passengers: Annotated[int, Query(ge=MIN_PASSENGERS, le=MAX_PASSENGERS)] = 1,

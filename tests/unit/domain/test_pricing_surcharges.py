@@ -35,21 +35,21 @@ from flights.domain.pricing import lookup_seat_surcharge
 
 APPENDIX_A_ANCHORS: list[tuple[SeatClass, SeatKind, str]] = [
     # Economy (ADR-004)
-    (SeatClass.ECONOMY, SeatKind.STANDARD,       "0.00"),
-    (SeatClass.ECONOMY, SeatKind.EXIT_ROW,      "35.00"),
+    (SeatClass.ECONOMY, SeatKind.STANDARD, "0.00"),
+    (SeatClass.ECONOMY, SeatKind.EXIT_ROW, "35.00"),
     (SeatClass.ECONOMY, SeatKind.FRONT_SECTION, "25.00"),
-    (SeatClass.ECONOMY, SeatKind.AISLE,         "15.00"),
-    (SeatClass.ECONOMY, SeatKind.WINDOW,        "15.00"),
-    (SeatClass.ECONOMY, SeatKind.MIDDLE,         "-5.00"),
+    (SeatClass.ECONOMY, SeatKind.AISLE, "15.00"),
+    (SeatClass.ECONOMY, SeatKind.WINDOW, "15.00"),
+    (SeatClass.ECONOMY, SeatKind.MIDDLE, "-5.00"),
     # Business (ADR-004)
-    (SeatClass.BUSINESS, SeatKind.STANDARD,         "0.00"),
+    (SeatClass.BUSINESS, SeatKind.STANDARD, "0.00"),
     (SeatClass.BUSINESS, SeatKind.LIE_FLAT_SUITE, "200.00"),
-    (SeatClass.BUSINESS, SeatKind.WINDOW_SUITE,   "100.00"),
-    (SeatClass.BUSINESS, SeatKind.AISLE_ACCESS,    "75.00"),
+    (SeatClass.BUSINESS, SeatKind.WINDOW_SUITE, "100.00"),
+    (SeatClass.BUSINESS, SeatKind.AISLE_ACCESS, "75.00"),
     # First (ADR-004)
-    (SeatClass.FIRST, SeatKind.STANDARD,       "0.00"),
+    (SeatClass.FIRST, SeatKind.STANDARD, "0.00"),
     (SeatClass.FIRST, SeatKind.PRIVATE_SUITE, "500.00"),
-    (SeatClass.FIRST, SeatKind.FRONT_ROW,     "150.00"),
+    (SeatClass.FIRST, SeatKind.FRONT_ROW, "150.00"),
 ]
 
 
@@ -80,12 +80,12 @@ class TestLookupSeatSurchargeUnknownPair:
     @pytest.mark.parametrize(
         "seat_class,kind",
         [
-            (SeatClass.ECONOMY,  SeatKind.LIE_FLAT_SUITE),  # Biz kind in Econ cabin
-            (SeatClass.ECONOMY,  SeatKind.PRIVATE_SUITE),   # First kind in Econ cabin
-            (SeatClass.BUSINESS, SeatKind.MIDDLE),          # Econ kind in Biz cabin
-            (SeatClass.BUSINESS, SeatKind.EXIT_ROW),        # Econ kind in Biz cabin
-            (SeatClass.FIRST,    SeatKind.MIDDLE),          # Econ kind in First cabin
-            (SeatClass.FIRST,    SeatKind.LIE_FLAT_SUITE),  # Biz kind in First cabin
+            (SeatClass.ECONOMY, SeatKind.LIE_FLAT_SUITE),  # Biz kind in Econ cabin
+            (SeatClass.ECONOMY, SeatKind.PRIVATE_SUITE),  # First kind in Econ cabin
+            (SeatClass.BUSINESS, SeatKind.MIDDLE),  # Econ kind in Biz cabin
+            (SeatClass.BUSINESS, SeatKind.EXIT_ROW),  # Econ kind in Biz cabin
+            (SeatClass.FIRST, SeatKind.MIDDLE),  # Econ kind in First cabin
+            (SeatClass.FIRST, SeatKind.LIE_FLAT_SUITE),  # Biz kind in First cabin
         ],
         ids=lambda p: p.value if hasattr(p, "value") else str(p),
     )
@@ -106,9 +106,7 @@ class TestSurchargesTableAsSingleSourceOfTruth:
         self,
     ) -> None:
         # Attribute access at module level, not via a factory or singleton.
-        assert hasattr(pricing, "SURCHARGES"), (
-            "pricing.SURCHARGES must be a module-level dict"
-        )
+        assert hasattr(pricing, "SURCHARGES"), "pricing.SURCHARGES must be a module-level dict"
         classes_present = {seat_class for seat_class, _ in pricing.SURCHARGES.keys()}
         # ADR-007: Premium Economy deferred; the three enabled classes must be covered.
         assert classes_present == {SeatClass.ECONOMY, SeatClass.BUSINESS, SeatClass.FIRST}, (

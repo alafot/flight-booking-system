@@ -19,6 +19,8 @@ each probing one observable outcome:
 
 from __future__ import annotations
 
+from typing import Any
+
 
 def test_replay_quote_reproduces_appendix_b_example_1_total() -> None:
     """Appendix B example 1: 299 USD base, 0% occupancy, 30 days out, Tuesday.
@@ -61,7 +63,7 @@ def test_verify_commits_returns_empty_when_replayed_total_matches_charged() -> N
     """
     from tests.support.audit_replay import verify_commits
 
-    events = [
+    events: list[dict[str, Any]] = [
         {
             "type": "QuoteCreated",
             "quote_id": "Q-MATCH-001",
@@ -96,7 +98,7 @@ def test_verify_commits_reports_mismatch_when_charged_total_drifts() -> None:
     reference and describing the drift."""
     from tests.support.audit_replay import verify_commits
 
-    events = [
+    events: list[dict[str, Any]] = [
         {
             "type": "QuoteCreated",
             "quote_id": "Q-DRIFT-001",
@@ -139,7 +141,7 @@ def test_verify_commits_skips_ws_shortcut_quote_id() -> None:
     """
     from tests.support.audit_replay import verify_commits
 
-    events = [
+    events: list[dict[str, Any]] = [
         {
             "type": "QuoteCreated",
             "quote_id": "Q-OTHER",

@@ -76,9 +76,7 @@ def test_row_14_seats_are_exit_row(column: str) -> None:
         ("F", SeatKind.WINDOW),
     ],
 )
-def test_economy_window_aisle_middle_kinds_per_column(
-    column: str, expected_kind: SeatKind
-) -> None:
+def test_economy_window_aisle_middle_kinds_per_column(column: str, expected_kind: SeatKind) -> None:
     # Row 20 is a plain economy row (not 14 exit row, not premium 7-10 band).
     cabin = default_cabin()
     seat = cabin.seats[SeatId(f"20{column}")]

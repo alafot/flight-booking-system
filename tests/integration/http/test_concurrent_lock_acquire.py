@@ -19,7 +19,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
-import pytest
 from fastapi.testclient import TestClient
 
 from flights.adapters.http.app import create_app
@@ -83,9 +82,7 @@ def _race_one_trial(client: TestClient) -> list[int]:
         return response.status_code
 
     with ThreadPoolExecutor(max_workers=_THREADS) as pool:
-        futures = [
-            pool.submit(_acquire, f"S-{index:02d}") for index in range(_THREADS)
-        ]
+        futures = [pool.submit(_acquire, f"S-{index:02d}") for index in range(_THREADS)]
         return [future.result() for future in futures]
 
 
@@ -107,14 +104,11 @@ class TestConcurrentLockAcquire:
             errors = [s for s in statuses if s >= 500]
 
             assert len(winners) == 1, (
-                f"trial {trial}: expected 1 winner, got {len(winners)} "
-                f"(statuses={statuses})"
+                f"trial {trial}: expected 1 winner, got {len(winners)} (statuses={statuses})"
             )
             assert len(conflicts) == 9, (
-                f"trial {trial}: expected 9 conflicts, got {len(conflicts)} "
-                f"(statuses={statuses})"
+                f"trial {trial}: expected 9 conflicts, got {len(conflicts)} (statuses={statuses})"
             )
             assert len(errors) == 0, (
-                f"trial {trial}: expected zero 5xx, got {errors} "
-                f"(statuses={statuses})"
+                f"trial {trial}: expected zero 5xx, got {errors} (statuses={statuses})"
             )

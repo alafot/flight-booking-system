@@ -1,0 +1,38 @@
+# Feature-scoped journey for the flight-booking-system feature.
+# Extends the SSOT journey at docs/product/journeys/book-a-flight.yaml — on this first
+# greenfield pass, the feature journey is the same as the SSOT plus test scenarios.
+
+extends: "../../../product/journeys/book-a-flight.yaml"
+id: journey.flight-booking-system.book-a-flight
+feature_id: flight-booking-system
+
+# No step overrides on first pass — the feature journey IS the SSOT journey.
+step_overrides: {}
+
+# Additional acceptance-scope notes for this feature's scope window.
+feature_scope_notes:
+  in_scope:
+    - "One-way search (origin/destination/departureDate/passengers/class)"
+    - "Round-trip search (adds returnDate)"
+    - "Filters: airline, price range, departure time window"
+    - "Single aircraft configuration (30 rows × 6 seats, A–F)"
+    - "All 4 seat classes for pricing (Economy, Premium Economy, Business, First) but the spec cabin has only 3 (Economy, Business, First) — reconcile in DESIGN"
+    - "Dynamic pricing per Appendix B"
+    - "Seat surcharges per Appendix A"
+    - "Mock payment; mock email"
+    - "In-memory persistence"
+
+  out_of_scope:
+    - "Real payment processors"
+    - "Real email delivery"
+    - "Persistent database"
+    - "Multi-cabin aircraft configurations"
+    - "Frontend/UI"
+    - "Authentication/authorization (spec does not mention)"
+    - "Multi-currency settlement (display-only FX only)"
+
+  contradictions_to_reconcile_in_design:
+    - description: "Seat classes mismatch: Appendix A lists Economy/Premium-Economy/Business/First (4), but section 2 says '3 classes (Economy, Business, First)' and specifies one aircraft layout."
+      resolution_needed: "DESIGN must decide whether to support Premium Economy at all. Default assumption: support 3 classes only; keep Premium Economy as future extension with pricing table preserved."
+    - description: "Performance targets (<2s search) conflict with arbitrary demand multipliers if all flights priced on every search."
+      resolution_needed: "DESIGN must decide between per-flight priced-at-search-time vs. priced-at-quote-time."

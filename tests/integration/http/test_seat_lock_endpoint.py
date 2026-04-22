@@ -69,7 +69,9 @@ def client(container: Container) -> TestClient:
 
 class TestSeatLockAcquire:
     def test_post_seat_lock_returns_201_for_free_seat(
-        self, client: TestClient, seeded_flight: Flight,
+        self,
+        client: TestClient,
+        seeded_flight: Flight,
     ) -> None:
         response = client.post(
             "/seat-locks",
@@ -88,7 +90,9 @@ class TestSeatLockAcquire:
         assert expires_at == _NOW + timedelta(minutes=10)
 
     def test_post_seat_lock_returns_409_for_locked_seat_from_other_session(
-        self, client: TestClient, seeded_flight: Flight,
+        self,
+        client: TestClient,
+        seeded_flight: Flight,
     ) -> None:
         # S1 takes the lock first.
         first = client.post(
@@ -119,7 +123,9 @@ class TestSeatLockAcquire:
 
 class TestSeatMapWithActiveLock:
     def test_seat_map_shows_locked_seat_as_unavailable_to_other_session(
-        self, client: TestClient, seeded_flight: Flight,
+        self,
+        client: TestClient,
+        seeded_flight: Flight,
     ) -> None:
         # S1 locks the seat.
         first = client.post(

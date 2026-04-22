@@ -19,9 +19,21 @@ def test_jsonl_audit_log_round_trips_events_to_disk(tmp_path: Path) -> None:
     path = tmp_path / "audit.jsonl"
     log = JsonlAuditLog(path)
     events = [
-        {"type": "QuoteCreated", "seq": 0, "at": datetime(2026, 4, 25, 10, 0, tzinfo=UTC).isoformat()},
-        {"type": "BookingCommitted", "seq": 1, "at": datetime(2026, 4, 25, 10, 1, tzinfo=UTC).isoformat()},
-        {"type": "PaymentFailed", "seq": 2, "at": datetime(2026, 4, 25, 10, 2, tzinfo=UTC).isoformat()},
+        {
+            "type": "QuoteCreated",
+            "seq": 0,
+            "at": datetime(2026, 4, 25, 10, 0, tzinfo=UTC).isoformat(),
+        },
+        {
+            "type": "BookingCommitted",
+            "seq": 1,
+            "at": datetime(2026, 4, 25, 10, 1, tzinfo=UTC).isoformat(),
+        },
+        {
+            "type": "PaymentFailed",
+            "seq": 2,
+            "at": datetime(2026, 4, 25, 10, 2, tzinfo=UTC).isoformat(),
+        },
     ]
 
     for event in events:

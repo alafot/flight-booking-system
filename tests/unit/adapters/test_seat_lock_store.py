@@ -189,9 +189,7 @@ class TestIsValid:
         # At the exact expires_at instant: expired (half-open window).
         assert store.is_valid(lock.lock_id, lock.expires_at) is False
         # And any later instant.
-        assert store.is_valid(
-            lock.lock_id, lock.expires_at + timedelta(seconds=1)
-        ) is False
+        assert store.is_valid(lock.lock_id, lock.expires_at + timedelta(seconds=1)) is False
 
     def test_is_valid_returns_false_for_unknown_lock_id(self) -> None:
         store = InMemorySeatLockStore(ids=_seq_ids())

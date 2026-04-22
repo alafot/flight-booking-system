@@ -143,9 +143,7 @@ class TestQuoteTaxesByRouteKind:
         )
         # Fees this iteration default to 0 (FEES_TABLE empty).
         assert "fees" in body, f"missing 'fees' in response: {body!r}"
-        assert Money.of(body["fees"]) == Money.of("0"), (
-            f"expected fees 0.00, got {body['fees']}"
-        )
+        assert Money.of(body["fees"]) == Money.of("0"), f"expected fees 0.00, got {body['fees']}"
 
     def test_quote_for_international_flight_returns_international_tax_in_breakdown(
         self, international_client: TestClient

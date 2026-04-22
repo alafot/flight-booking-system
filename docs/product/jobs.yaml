@@ -1,0 +1,55 @@
+# Product Jobs registry
+# NOTE: JTBD analysis was intentionally skipped during DISCUSS (Decision 4 = No).
+# This file is a minimal seed derived from the spec's user stories, not a validated JTBD artifact.
+# Future features may upgrade individual entries with full four-forces analysis.
+
+schema_version: "0.1-seed"
+validated: false
+source: "spec: Flight-Booking-System.pdf (user stories section of each capability)"
+
+jobs:
+  - id: job.find-flight
+    summary: "Find a flight that matches my trip"
+    job_story: "When I know where and when I need to fly, I want to see the real options available between those cities on those dates, so I can compare and pick one I'm willing to commit to."
+    surfaces:
+      - "GET /flights/search"
+    validated: false
+
+  - id: job.pick-seat
+    summary: "Pick the specific seat I want"
+    job_story: "When I'm booking a flight I care about, I want to see the cabin and choose the exact seat I sit in, so I travel the way I prefer (aisle/window/extra legroom) and don't get surprised at check-in."
+    surfaces:
+      - "GET /flights/{flightId}/seats"
+      - "POST /bookings/{bookingId}/seats"
+    validated: false
+
+  - id: job.know-the-price
+    summary: "Know the full price before I commit"
+    job_story: "When I'm deciding whether to book, I want to see the all-in price with taxes, fees and any discounts broken down, so I can trust the number and not get hit with surprises at checkout."
+    surfaces:
+      - "price quote in search results"
+      - "price breakdown at seat-selection and booking time"
+    validated: false
+
+  - id: job.commit-booking
+    summary: "Commit and hold my booking"
+    job_story: "When I've chosen my flight, seats and price, I want to confirm and get a reference that proves it's mine, so I can stop worrying and move on with trip planning."
+    surfaces:
+      - "POST /bookings"
+      - "GET /bookings/{id}"
+    validated: false
+
+  - id: job.change-plans
+    summary: "Change or cancel my plans"
+    job_story: "When my plans change, I want to modify or cancel my booking and see exactly what it costs me, so I can make the decision without calling anyone."
+    surfaces:
+      - "PUT /bookings/{id}"
+      - "DELETE /bookings/{id}"
+    validated: false
+
+  - id: job.block-seats-operationally
+    summary: "Block seats for crew/maintenance (operator job)"
+    job_story: "When an aircraft needs seats held for crew, maintenance or other operational reasons, I want to mark those seats as blocked so travelers don't book them."
+    surfaces:
+      - "admin-only seat blocking (implied; not in public API spec)"
+    validated: false

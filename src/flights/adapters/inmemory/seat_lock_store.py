@@ -175,7 +175,9 @@ class InMemorySeatLockStore:
     # --- internal query used by SeatMapService (package-private) ------------
 
     def find_active_lock_for_seat(
-        self, seat_id: SeatId, now: datetime,
+        self,
+        seat_id: SeatId,
+        now: datetime,
     ) -> LockRecord | None:
         """Return the live lock record on ``seat_id`` at time ``now``, or
         ``None`` if there is no record or the record has expired.
