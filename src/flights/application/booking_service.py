@@ -115,7 +115,6 @@ class BookingService:
             #     from current flight state — when the quote is live.
             # Without a ``quote_id`` (walking-skeleton backward-compat path)
             # the service falls back to ``flight.base_fare`` as before.
-            # Phase 07: verify lock via self._locks.is_valid(request.lock_id, now).
             now = self._clock.now()
             quote_lookup = self._resolve_quote(request.quote_id, now)
             if quote_lookup.error is not None:
@@ -128,6 +127,18 @@ class BookingService:
             seat_error = self._validate_seats(flight, request)
             if seat_error is not None:
                 return seat_error
+
+            # Step 07-02: seat-lock validation (ADR-008). When a ``lock_id``
+            # is supplied, we enforce three invariants BEFORE charging:
+            #   * lock exists and has not expired (410 otherwise).
+            #   * lock exists at all (404 otherwise).
+            #   * lock is owned by ``request.session_id`` (403 otherwise).
+            # Backward-compat: a commit without ``lock_id`` skips this block
+            # entirely — preserves the walking-skeleton and milestone-06
+            # contract where commits charged directly without holding a lock.
+            lock_error = self._validate_lock(request, now)
+            if lock_error is not None:
+                return lock_error
 
             total = (
                 quote_lookup.quote.price_breakdown.total
@@ -186,6 +197,15 @@ class BookingService:
             )
             self._bookings.save(booking)
             self._email.queue_confirmation(booking)
+            # Step 07-02: release the seat-lock on successful commit (ADR-008).
+            # The lock existed only to reserve the seat between acquire and
+            # commit; once the booking is persisted the seat is owned by the
+            # booking itself and the lock is redundant. Releasing eagerly
+            # means a subsequent attempt by any session finds the seat free
+            # at the lock layer and fails instead at the booking layer
+            # (SEAT_ALREADY_BOOKED via ``_seat_already_booked``).
+            if request.lock_id is not None:
+                self._locks.release(request.lock_id)
             # Phase 06-02: BookingCommitted carries quote_id and total_charged
             # so the replay utility (``tests/support/audit_replay.py``) can
             # reconcile the charged amount against the matching QuoteCreated
@@ -288,3 +308,58 @@ class BookingService:
             if seat_id in existing.seat_ids:
                 return True
         return False
+
+    def _validate_lock(
+        self, request: CommitRequest, now: datetime
+    ) -> CommitResult | None:
+        """Validate ``request.lock_id`` against the store (ADR-008).
+
+        Mirrors the 410-vs-404 idiom used for quotes: call ``is_valid``
+        first (TTL-enforcing), and only if that returns False do we call
+        ``get`` to distinguish "stored but expired" from "never issued".
+        Session-mismatch is a 403 regardless of TTL because attempting to
+        use another session's lock — even one that would otherwise be
+        live — is a policy violation, not a timing issue.
+
+        Returns ``None`` when the commit should proceed, or a populated
+        :class:`CommitResult` error otherwise.
+        """
+        if request.lock_id is None:
+            return None
+        if self._locks.is_valid(request.lock_id, now):
+            return self._check_lock_session_ownership(request)
+        raw = self._locks.get(request.lock_id)
+        if raw is None:
+            return CommitResult(
+                booking=None,
+                error_code="LOCK_NOT_FOUND",
+                error_message=f"seat lock not found: {request.lock_id}",
+            )
+        return CommitResult(
+            booking=None,
+            error_code="LOCK_EXPIRED",
+            error_message=f"seat lock expired: {request.lock_id}",
+        )
+
+    def _check_lock_session_ownership(
+        self, request: CommitRequest
+    ) -> CommitResult | None:
+        """Enforce that the commit's session owns the referenced lock.
+
+        Split out from :meth:`_validate_lock` so the TTL branch stays
+        single-purpose (only emits LOCK_EXPIRED / LOCK_NOT_FOUND) and the
+        ownership branch reads as its own policy check.
+        """
+        raw = self._locks.get(request.lock_id)
+        if raw is None:
+            return None
+        owner_session = getattr(raw, "session_id", None)
+        if request.session_id is None:
+            return None
+        if owner_session == request.session_id:
+            return None
+        return CommitResult(
+            booking=None,
+            error_code="LOCK_SESSION_MISMATCH",
+            error_message="seat lock not owned by session",
+        )

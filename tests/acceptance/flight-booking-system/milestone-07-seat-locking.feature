@@ -16,7 +16,7 @@ Feature: Milestone 07 — Seat locking and concurrent-booking safety
     When session "S2" requests the seat map for "FL-LAX-NYC-0800"
     Then seat "30F" is reported as unavailable to session "S2"
 
-  @pending @kpi
+  @kpi
   Scenario: Ten concurrent lock requests on the same seat — exactly one winner
     When ten sessions concurrently request a lock on seat "30F"
     Then exactly one session receives HTTP 201
@@ -35,7 +35,6 @@ Feature: Milestone 07 — Seat locking and concurrent-booking safety
     And session "S2" requests a lock on seat "30F"
     Then session "S2" receives HTTP 201 with a new lock
 
-  @pending
   Scenario: Commit with expired lock returns 410 Gone
     Given session "S1" holds a lock on seat "30F" and an associated valid quote
     When the clock advances by 11 minutes
@@ -43,7 +42,6 @@ Feature: Milestone 07 — Seat locking and concurrent-booking safety
     Then the response status is 410
     And the response body cites "seat lock expired"
 
-  @pending
   Scenario: Payment failure preserves the seat lock for retry
     Given session "S1" holds a valid lock on seat "30F" and a valid quote
     When session "S1" commits with a paymentToken that the mock rejects

@@ -1916,3 +1916,220 @@ def _assert_session_receives_201_with_lock(world: dict, session_id: str) -> None
     )
     body = response.json()
     assert body.get("lockId"), f"response missing lockId: {body!r}"
+
+
+# ---- Milestone 07: step 07-02 (commit under lock + concurrent acquire) -----
+
+@when(parsers.parse('ten sessions concurrently request a lock on seat "{seat_id}"'))
+def _ten_sessions_concurrent_acquire(
+    client, world: dict, seat_id: str,
+) -> None:
+    """Launch ten concurrent ``POST /seat-locks`` requests against the same
+    seat, each with a distinct sessionId. Synchronise launch through a
+    ``threading.Barrier`` so all ten threads are racing at the same instant —
+    mirroring the real tension the ADR-008 critical section is designed for.
+
+    Stashes the list of responses in ``world["responses"]`` so the Thens can
+    assert winner/rejection/500 counts without re-driving the endpoint.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    flight_id = world["last_flight_id"]
+    barrier = threading.Barrier(10)
+
+    def _acquire(session_id: str):
+        barrier.wait()
+        return client.post(
+            "/seat-locks",
+            json={
+                "flightId": flight_id,
+                "seatIds": [seat_id],
+                "sessionId": session_id,
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = [pool.submit(_acquire, f"S-{i:02d}") for i in range(10)]
+        world["responses"] = [f.result() for f in futures]
+
+
+@then("exactly one session receives HTTP 201")
+def _assert_exactly_one_winner(world: dict) -> None:
+    responses = world["responses"]
+    winners = [r for r in responses if r.status_code == 201]
+    assert len(winners) == 1, (
+        f"expected exactly 1 winner, got {len(winners)}: "
+        f"{[r.status_code for r in responses]}"
+    )
+
+
+@then(parsers.parse(
+    'the other nine sessions receive HTTP 409 with "{phrase}"'
+))
+def _assert_nine_conflicts(world: dict, phrase: str) -> None:
+    responses = world["responses"]
+    conflicts = [r for r in responses if r.status_code == 409]
+    assert len(conflicts) == 9, (
+        f"expected 9 conflicts, got {len(conflicts)}: "
+        f"{[r.status_code for r in responses]}"
+    )
+    for response in conflicts:
+        body = response.json()
+        assert phrase in body.get("detail", "").lower(), (
+            f"expected 409 detail to cite {phrase!r}, got {body!r}"
+        )
+
+
+@then("zero sessions receive a 500")
+def _assert_zero_500s(world: dict) -> None:
+    responses = world["responses"]
+    fails = [r for r in responses if r.status_code >= 500]
+    assert len(fails) == 0, (
+        f"expected zero 5xx responses, got {len(fails)}: "
+        f"{[r.status_code for r in fails]}"
+    )
+
+
+@given(parsers.parse(
+    'session "{session_id}" holds a lock on seat "{seat_id}" and '
+    'an associated valid quote'
+))
+def _seed_lock_and_quote(
+    client, world: dict, session_id: str, seat_id: str,
+) -> None:
+    """Acquire a lock on ``seat_id`` for ``session_id`` AND mint a quote for
+    the same seat. Both are driven through real HTTP endpoints so production
+    code installs them.
+    """
+    flight_id = world["last_flight_id"]
+    lock_response = client.post(
+        "/seat-locks",
+        json={
+            "flightId": flight_id,
+            "seatIds": [seat_id],
+            "sessionId": session_id,
+        },
+    )
+    assert lock_response.status_code == 201, (
+        f"failed to seed lock: {lock_response.status_code} {lock_response.text}"
+    )
+    world["lock_id"] = lock_response.json()["lockId"]
+    world["session_id"] = session_id
+
+    quote_response = client.post(
+        "/quotes",
+        json={
+            "flightId": flight_id,
+            "seatIds": [seat_id],
+            "passengers": 1,
+            "sessionId": session_id,
+        },
+    )
+    assert quote_response.status_code == 200, (
+        f"failed to seed quote: {quote_response.status_code} {quote_response.text}"
+    )
+    world["quote_id"] = quote_response.json()["quoteId"]
+
+
+@given(parsers.parse(
+    'session "{session_id}" holds a valid lock on seat "{seat_id}" and '
+    'a valid quote'
+))
+def _seed_valid_lock_and_valid_quote(
+    client, world: dict, session_id: str, seat_id: str,
+) -> None:
+    """Narrative variant of the previous Given — same behaviour. Kept as a
+    distinct binding because pytest-bdd matches by exact phrase and the two
+    feature scenarios phrase the precondition differently ("an associated
+    valid" vs "a valid").
+    """
+    _seed_lock_and_quote(
+        client=client, world=world, session_id=session_id, seat_id=seat_id,
+    )
+
+
+@when(parsers.parse(
+    'session "{session_id}" commits a booking using the expired lock'
+))
+def _commit_with_expired_lock(
+    client, world: dict, session_id: str,
+) -> None:
+    """POST /bookings carrying the previously-seeded lock_id + session_id.
+    The clock has already been advanced past the TTL by the preceding When
+    step, so the commit should be rejected with 410 Gone.
+    """
+    flight_id = world["last_flight_id"]
+    seat_id = "30F"
+    world["response"] = client.post(
+        "/bookings",
+        json={
+            "flightId": flight_id,
+            "seatId": seat_id,
+            "passenger": {"name": "Jane Doe"},
+            "paymentToken": "mock-ok",
+            "quoteId": world["quote_id"],
+            "lockId": world["lock_id"],
+            "sessionId": session_id,
+        },
+    )
+
+
+@when(parsers.parse(
+    'session "{session_id}" commits with a paymentToken that the mock rejects'
+))
+def _commit_with_rejected_payment(
+    client, world: dict, session_id: str,
+) -> None:
+    """POST /bookings with ``paymentToken='fail'`` — the MockPaymentGateway
+    default decline token. The commit reaches the payment charge after
+    seat, quote, and lock validations all pass, so the failure branch
+    exercises the "lock preserved" path.
+    """
+    flight_id = world["last_flight_id"]
+    seat_id = "30F"
+    world["response"] = client.post(
+        "/bookings",
+        json={
+            "flightId": flight_id,
+            "seatId": seat_id,
+            "passenger": {"name": "Jane Doe"},
+            "paymentToken": "fail",
+            "quoteId": world["quote_id"],
+            "lockId": world["lock_id"],
+            "sessionId": session_id,
+        },
+    )
+
+
+@then(parsers.parse(
+    'the lock on seat "{seat_id}" is still valid when the clock is unchanged'
+))
+def _assert_lock_still_valid(
+    container, world: dict, seat_id: str,
+) -> None:
+    """Assert the seeded lock is still in the store and unexpired — proving
+    the payment-failure branch did NOT release it. Reads the store directly
+    because the HTTP port does not expose a lock-status query.
+    """
+    now = container.clock.now()
+    lock_id = world["lock_id"]
+    assert container.seat_lock_store.is_valid(lock_id, now), (
+        f"expected lock {lock_id} on {seat_id} to still be valid at {now}"
+    )
+
+
+@then(parsers.parse('an audit "{event_type}" event is written'))
+def _assert_audit_event_written(
+    container, event_type: str,
+) -> None:
+    """Assert at least one audit event of ``event_type`` was written. Used
+    by the payment-failure scenario to confirm the PaymentFailed trail is
+    recorded even though the booking was rejected.
+    """
+    events = getattr(container.audit, "events", [])
+    matching = [e for e in events if e.get("type") == event_type]
+    assert matching, (
+        f"expected at least one {event_type} event, got: "
+        f"{[e.get('type') for e in events]}"
+    )

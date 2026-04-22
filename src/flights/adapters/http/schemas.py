@@ -97,6 +97,13 @@ class BookingRequestBody(BaseModel):
     passenger: dict  # {"name": "..."} — tightened in a later slice
     payment_token: Annotated[str, Field(alias="paymentToken", min_length=1)]
     quote_id: Annotated[str | None, Field(alias="quoteId", default=None)] = None
+    # Step 07-02: ``lockId``/``sessionId`` are optional companions to
+    # ``quoteId`` — all three travel together under ADR-008's "quote a
+    # price, lock the seat, commit the booking" sequence. Absent for the
+    # milestone-06 and walking-skeleton paths where commits proceed
+    # without a seat lock.
+    lock_id: Annotated[str | None, Field(alias="lockId", default=None)] = None
+    session_id: Annotated[str | None, Field(alias="sessionId", default=None)] = None
 
     model_config = {"populate_by_name": True}
 

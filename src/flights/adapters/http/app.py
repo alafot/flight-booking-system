@@ -100,6 +100,13 @@ _COMMIT_ERROR_HTTP_STATUS: dict[str, int] = {
     # has crossed its 30-minute TTL. 404 is the standard "never existed".
     "QUOTE_EXPIRED": 410,
     "QUOTE_NOT_FOUND": 404,
+    # Step 07-02: seat-lock branches (ADR-008). 410 mirrors the quote
+    # TTL idiom — the lock was here but has aged out. 404 for an id
+    # that was never issued. 403 for a lock owned by a different
+    # session (policy violation, not TTL).
+    "LOCK_EXPIRED": 410,
+    "LOCK_NOT_FOUND": 404,
+    "LOCK_SESSION_MISMATCH": 403,
 }
 
 
@@ -311,6 +318,14 @@ def create_app(container: Container | None = None) -> FastAPI:
 
         raw_quote_id = payload.get("quoteId")
         quote_id = QuoteId(raw_quote_id) if raw_quote_id is not None else None
+        # Step 07-02: ``lockId``/``sessionId`` are also optional — present
+        # when the commit follows a POST /seat-locks acquire (ADR-008),
+        # absent for the walking-skeleton and milestone-06 paths. When
+        # present, BookingService validates the lock and releases it on
+        # success; 404/410/403 map via ``_COMMIT_ERROR_HTTP_STATUS``.
+        raw_lock_id = payload.get("lockId")
+        raw_session_id = payload.get("sessionId")
+        session_id = SessionId(raw_session_id) if raw_session_id is not None else None
 
         commit_request = CommitRequest(
             flight_id=flight_id,
@@ -318,6 +333,8 @@ def create_app(container: Container | None = None) -> FastAPI:
             passengers=(PassengerDetails(full_name=passenger_name),),
             payment_token=payment_token,
             quote_id=quote_id,
+            lock_id=raw_lock_id,
+            session_id=session_id,
         )
         result = c.booking_service.commit(commit_request)
         if result.booking is None:

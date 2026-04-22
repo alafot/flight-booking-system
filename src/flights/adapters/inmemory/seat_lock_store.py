@@ -114,6 +114,17 @@ class InMemorySeatLockStore:
                 return False
             return now < record.expires_at
 
+    def get(self, lock_id: str) -> LockRecord | None:
+        """Return the raw lock record, TTL-ignoring.
+
+        Used by ``BookingService.commit`` to distinguish "expired" (stored
+        but past ``expires_at``) from "unknown" (never issued) — the 410
+        vs 404 HTTP branch. Callers who want TTL-enforcing lookup should
+        use :meth:`is_valid`.
+        """
+        with self._lock:
+            return self._by_lock.get(lock_id)
+
     # --- private helpers -----------------------------------------------------
 
     def _find_conflicts(
