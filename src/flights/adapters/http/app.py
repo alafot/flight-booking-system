@@ -101,6 +101,11 @@ def _search_round_trip(container: Any, params: SearchQueryParams) -> dict:
             passengers=params.passengers,
             page=params.page,
             size=params.size,
+            airline=params.airline,
+            min_price=params.min_price,
+            max_price=params.max_price,
+            departure_time_from=params.departure_time_from,
+            departure_time_to=params.departure_time_to,
         )
     )
     start = (result.page - 1) * result.size
@@ -248,6 +253,11 @@ def create_app(container: Container | None = None) -> FastAPI:
                 passengers=params.passengers,
                 page=params.page,
                 size=params.size,
+                airline=params.airline,
+                min_price=params.min_price,
+                max_price=params.max_price,
+                departure_time_from=params.departure_time_from,
+                departure_time_to=params.departure_time_to,
             )
         )
         start = (result.page - 1) * result.size

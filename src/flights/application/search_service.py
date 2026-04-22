@@ -10,7 +10,8 @@ one-way searches and a ≥2h outbound-arrival/return-departure buffer.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import time, timedelta
+from decimal import Decimal
 
 from flights.domain.model.flight import Flight
 from flights.domain.model.money import Money
@@ -33,6 +34,13 @@ class SearchRequest:
     size: int = 20
     airline: str | None = None
     return_date: str | None = None
+    # Step 08-02: post-search filters. All optional; ``None`` means the
+    # filter is not applied. ``min_price``/``max_price`` are inclusive
+    # bounds, the time window is an inclusive [from, to] HH:MM range.
+    min_price: Decimal | None = None
+    max_price: Decimal | None = None
+    departure_time_from: time | None = None
+    departure_time_to: time | None = None
 
 
 @dataclass
@@ -89,6 +97,23 @@ class SearchService:
             departure_date=request.departure_date,
             airline=request.airline,
         )
+        # Step 08-02: post-search filters (price range, time window).
+        # Airline is already handled by the repository. Price and time
+        # are applied in-application so the repository port signature
+        # stays narrow — adding them to the port would force every
+        # adapter (including future SQL/Elasticsearch ones) to duplicate
+        # the same predicate logic.
+        matches = _apply_price_filter(
+            matches,
+            min_price=request.min_price,
+            max_price=request.max_price,
+            price_of=lambda flight: flight.base_fare.amount,
+        )
+        matches = _apply_time_window_filter(
+            matches,
+            time_from=request.departure_time_from,
+            time_to=request.departure_time_to,
+        )
         return SearchResult(
             flights=matches,
             page=request.page,
@@ -143,6 +168,28 @@ class SearchService:
             if return_flight.departure_at
             >= outbound.arrival_at + MINIMUM_LAYOVER
         ]
+        # Step 08-02: post-pair filters. Price filter applies to the
+        # pair's ``total_indicative_price`` (the indicative total the
+        # ranking client sees). The time window applies to the OUTBOUND
+        # leg only — ADR-007 keeps the return-leg window out of scope
+        # until a later slice adds a dedicated ``returnTimeFrom/To``
+        # pair of params.
+        eligible = _apply_price_filter(
+            eligible,
+            min_price=request.min_price,
+            max_price=request.max_price,
+            price_of=lambda pair: pair.total_indicative_price.amount,
+        )
+        if request.departure_time_from is not None or \
+                request.departure_time_to is not None:
+            eligible = [
+                pair for pair in eligible
+                if _is_within_time_window(
+                    pair.outbound.departure_at.time(),
+                    request.departure_time_from,
+                    request.departure_time_to,
+                )
+            ]
         eligible.sort(
             key=lambda pair: (
                 pair.outbound.departure_at,
@@ -155,3 +202,60 @@ class SearchService:
             size=request.size,
             pair_count=len(eligible),
         )
+
+
+def _apply_price_filter[T](
+    items: list[T],
+    *,
+    min_price: Decimal | None,
+    max_price: Decimal | None,
+    price_of,
+) -> list[T]:
+    """Return items whose ``price_of(item)`` lies in [min_price, max_price].
+
+    Both bounds are optional and inclusive. ``None`` means the bound is
+    open on that side (i.e. no lower/upper limit). A no-filter call
+    (both bounds ``None``) returns the list unchanged.
+    """
+    if min_price is None and max_price is None:
+        return items
+    def in_range(item: T) -> bool:
+        price = price_of(item)
+        if min_price is not None and price < min_price:
+            return False
+        if max_price is not None and price > max_price:
+            return False
+        return True
+    return [item for item in items if in_range(item)]
+
+
+def _apply_time_window_filter(
+    flights: list[Flight],
+    *,
+    time_from: time | None,
+    time_to: time | None,
+) -> list[Flight]:
+    """Filter flights whose departure time falls in the [from, to] window.
+
+    The window is inclusive on both ends; ``None`` means the side is
+    unbounded. Compared against ``flight.departure_at.time()`` so the
+    result is timezone-naive — matches the AC wording "local time".
+    """
+    if time_from is None and time_to is None:
+        return flights
+    return [
+        flight for flight in flights
+        if _is_within_time_window(
+            flight.departure_at.time(), time_from, time_to,
+        )
+    ]
+
+
+def _is_within_time_window(
+    candidate: time, time_from: time | None, time_to: time | None,
+) -> bool:
+    if time_from is not None and candidate < time_from:
+        return False
+    if time_to is not None and candidate > time_to:
+        return False
+    return True

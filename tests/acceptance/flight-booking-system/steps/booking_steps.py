@@ -2383,3 +2383,298 @@ def _assert_pair_and_flight_counts(world: dict) -> None:
     assert flight_count == 2 * pair_count, (
         f"flightCount ({flight_count}) != 2 * pairCount ({pair_count})"
     )
+
+
+# ---- Milestone 08: step 08-02 (filters) ------------------------------------
+#
+# Filter scenarios exercise the /flights/search endpoint with optional
+# query params (``airline``, ``minPrice``, ``maxPrice``,
+# ``departureTimeFrom``, ``departureTimeTo``). Filters compose AND and are
+# commutative (query-string order does not change the response). They are
+# applied post-search in the application service so the repository port
+# signature stays narrow.
+#
+# The filter scenarios each seed a small set of flights tailored to the
+# scenario so assertions are non-vacuous (empty result sets would satisfy
+# "every returned flight …" with circular-verification theatre).
+
+
+@when(parsers.parse(
+    'the traveler searches {origin} to {destination} on {departure_date} '
+    'with airline "{airline}"'
+))
+def _http_search_with_airline(
+    container,
+    client,
+    world: dict,
+    origin: str,
+    destination: str,
+    departure_date: str,
+    airline: str,
+) -> None:
+    # Seed one AA and one UA flight so the airline filter has signal.
+    departure_base = datetime.fromisoformat(f"{departure_date}T10:00:00+00:00")
+    container.flight_repo.add(
+        Flight(
+            id=FlightId("FL-FILTER-AA"),
+            origin=origin, destination=destination,
+            departure_at=departure_base,
+            arrival_at=departure_base,
+            airline="AA",
+            base_fare=Money.of("299"),
+            cabin=Cabin(),
+        )
+    )
+    container.flight_repo.add(
+        Flight(
+            id=FlightId("FL-FILTER-UA"),
+            origin=origin, destination=destination,
+            departure_at=departure_base,
+            arrival_at=departure_base,
+            airline="UA",
+            base_fare=Money.of("299"),
+            cabin=Cabin(),
+        )
+    )
+    world["response"] = client.get(
+        "/flights/search",
+        params={
+            "origin": origin,
+            "destination": destination,
+            "departureDate": departure_date,
+            "airline": airline,
+        },
+    )
+
+
+@then(parsers.parse('every returned flight has airline "{airline}"'))
+def _assert_every_flight_has_airline(world: dict, airline: str) -> None:
+    response = world["response"]
+    assert response.status_code == 200, (
+        f"expected 200, got {response.status_code}: {response.text}"
+    )
+    body = response.json()
+    flights = body.get("flights", [])
+    assert flights, f"expected non-empty flight list, got {body!r}"
+    for flight in flights:
+        assert flight["airline"] == airline, (
+            f"flight {flight['id']} has airline {flight['airline']!r}, "
+            f"expected {airline!r}"
+        )
+
+
+@when(parsers.parse(
+    'the traveler searches {origin} to {destination} on {departure_date} '
+    'with minPrice {min_price:d} and maxPrice {max_price:d}'
+))
+def _http_search_with_price_range(
+    container,
+    client,
+    world: dict,
+    origin: str,
+    destination: str,
+    departure_date: str,
+    min_price: int,
+    max_price: int,
+) -> None:
+    # Seed three flights at different price points to exercise the
+    # inclusive-range filter: 150 (below), 300 (inside), 600 (above).
+    departure_base = datetime.fromisoformat(f"{departure_date}T10:00:00+00:00")
+    for suffix, fare in (("CHEAP", "150"), ("MID", "300"), ("PREMIUM", "600")):
+        container.flight_repo.add(
+            Flight(
+                id=FlightId(f"FL-FILTER-{suffix}"),
+                origin=origin, destination=destination,
+                departure_at=departure_base,
+                arrival_at=departure_base,
+                airline="AA",
+                base_fare=Money.of(fare),
+                cabin=Cabin(),
+            )
+        )
+    world["response"] = client.get(
+        "/flights/search",
+        params={
+            "origin": origin,
+            "destination": destination,
+            "departureDate": departure_date,
+            "minPrice": min_price,
+            "maxPrice": max_price,
+        },
+    )
+    world["last_price_range"] = (min_price, max_price)
+
+
+@then(parsers.parse(
+    "every returned flight's indicative total is between {lo:d} and {hi:d} inclusive"
+))
+def _assert_every_flight_in_price_range(world: dict, lo: int, hi: int) -> None:
+    response = world["response"]
+    assert response.status_code == 200
+    body = response.json()
+    flights = body.get("flights", [])
+    assert flights, f"expected non-empty flight list, got {body!r}"
+    for flight in flights:
+        fare = Decimal(flight["baseFare"]["amount"])
+        assert Decimal(lo) <= fare <= Decimal(hi), (
+            f"flight {flight['id']} fare {fare} outside [{lo}, {hi}]"
+        )
+
+
+@when(parsers.parse(
+    'the traveler searches {origin} to {destination} on {departure_date} '
+    'with departureTimeFrom {time_from} and departureTimeTo {time_to}'
+))
+def _http_search_with_time_window(
+    container,
+    client,
+    world: dict,
+    origin: str,
+    destination: str,
+    departure_date: str,
+    time_from: str,
+    time_to: str,
+) -> None:
+    # Seed three departures: 07:00 (before), 12:00 (inside), 19:00 (after).
+    for hhmm, suffix in (("07:00", "EARLY"), ("12:00", "MID"), ("19:00", "LATE")):
+        departure = datetime.fromisoformat(
+            f"{departure_date}T{hhmm}:00+00:00"
+        )
+        container.flight_repo.add(
+            Flight(
+                id=FlightId(f"FL-TIMEFILTER-{suffix}"),
+                origin=origin, destination=destination,
+                departure_at=departure,
+                arrival_at=departure,
+                airline="AA",
+                base_fare=Money.of("299"),
+                cabin=Cabin(),
+            )
+        )
+    world["response"] = client.get(
+        "/flights/search",
+        params={
+            "origin": origin,
+            "destination": destination,
+            "departureDate": departure_date,
+            "departureTimeFrom": time_from,
+            "departureTimeTo": time_to,
+        },
+    )
+    world["last_time_window"] = (time_from, time_to)
+
+
+@then(parsers.parse(
+    "every returned flight departs between {time_from} and {time_to} local time"
+))
+def _assert_every_flight_in_time_window(
+    world: dict, time_from: str, time_to: str
+) -> None:
+    from datetime import time as _time
+    lo = _time.fromisoformat(time_from)
+    hi = _time.fromisoformat(time_to)
+    response = world["response"]
+    assert response.status_code == 200
+    body = response.json()
+    flights = body.get("flights", [])
+    assert flights, f"expected non-empty flight list, got {body!r}"
+    for flight in flights:
+        departs_at = datetime.fromisoformat(flight["departureAt"])
+        depart_time = departs_at.time()
+        assert lo <= depart_time <= hi, (
+            f"flight {flight['id']} departs at {depart_time} outside "
+            f"[{lo}, {hi}]"
+        )
+
+
+@when(parsers.parse(
+    'the traveler searches with airline "{airline}" and maxPrice {max_price:d}'
+))
+def _http_search_airline_then_price(
+    container,
+    client,
+    world: dict,
+    airline: str,
+    max_price: int,
+) -> None:
+    # Seed a 4-flight grid so AND-composition + commutativity has signal:
+    #   AA@299 (matches both),  AA@800 (matches airline only),
+    #   UA@299 (matches price only), UA@800 (matches neither).
+    # Only seed the first call to avoid duplicate ids on the second query.
+    if not world.get("_filter_grid_seeded"):
+        departure = datetime.fromisoformat("2026-06-01T10:00:00+00:00")
+        grid = (
+            ("FL-AA-CHEAP", "AA", "299"),
+            ("FL-AA-PREMIUM", "AA", "800"),
+            ("FL-UA-CHEAP", "UA", "299"),
+            ("FL-UA-PREMIUM", "UA", "800"),
+        )
+        for flight_id, flight_airline, fare in grid:
+            container.flight_repo.add(
+                Flight(
+                    id=FlightId(flight_id),
+                    origin="LAX", destination="NYC",
+                    departure_at=departure,
+                    arrival_at=departure,
+                    airline=flight_airline,
+                    base_fare=Money.of(fare),
+                    cabin=Cabin(),
+                )
+            )
+        world["_filter_grid_seeded"] = True
+    world["response_airline_first"] = client.get(
+        "/flights/search",
+        params=[
+            ("origin", "LAX"),
+            ("destination", "NYC"),
+            ("departureDate", "2026-06-01"),
+            ("airline", airline),
+            ("maxPrice", str(max_price)),
+        ],
+    )
+
+
+@when(parsers.parse(
+    'the traveler searches with maxPrice {max_price:d} and airline "{airline}"'
+))
+def _http_search_price_then_airline(
+    client,
+    world: dict,
+    max_price: int,
+    airline: str,
+) -> None:
+    world["response_price_first"] = client.get(
+        "/flights/search",
+        params=[
+            ("origin", "LAX"),
+            ("destination", "NYC"),
+            ("departureDate", "2026-06-01"),
+            ("maxPrice", str(max_price)),
+            ("airline", airline),
+        ],
+    )
+
+
+@then("both responses return identical result sets")
+def _assert_responses_identical(world: dict) -> None:
+    r1 = world["response_airline_first"]
+    r2 = world["response_price_first"]
+    assert r1.status_code == 200 == r2.status_code, (
+        f"both must be 200, got {r1.status_code} and {r2.status_code}"
+    )
+    body1 = r1.json()
+    body2 = r2.json()
+    # Compare the sorted set of flight ids — the response total and the
+    # flight list under the same id set is what "identical result sets"
+    # means for AND-commutativity.
+    ids1 = sorted(f["id"] for f in body1.get("flights", []))
+    ids2 = sorted(f["id"] for f in body2.get("flights", []))
+    assert ids1 == ids2, (
+        f"filter order affected result set: "
+        f"airline-first={ids1!r} price-first={ids2!r}"
+    )
+    assert body1.get("total") == body2.get("total"), (
+        f"total differs: {body1.get('total')!r} vs {body2.get('total')!r}"
+    )
+    # Non-vacuous — the grid guarantees one matching flight (AA@299).
+    assert ids1, "expected at least one matching flight, got empty result set"

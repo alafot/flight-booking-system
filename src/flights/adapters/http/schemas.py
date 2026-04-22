@@ -12,6 +12,8 @@ with a per-field error list.
 from __future__ import annotations
 
 from datetime import date as date_type
+from datetime import time as time_type
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import Query
@@ -192,6 +194,19 @@ class SearchQueryParams(BaseModel):
     seat_class: SeatClass | None = None
     page: Annotated[int, Field(ge=1)] = 1
     size: Annotated[int, Field(ge=1)] = MAX_PAGE_SIZE
+    # Step 08-02: optional post-search filters. ``airline`` is an exact
+    # IATA-code match. ``min_price``/``max_price`` bound the one-way
+    # ``baseFare`` or the round-trip ``totalIndicativePrice`` inclusively.
+    # ``departure_time_from``/``_to`` bound the OUTBOUND departure's local
+    # time (HH:MM) inclusively — for round-trip queries the rule applies
+    # to the outbound leg only (see ADR-007).
+    airline: Annotated[
+        str | None, Field(default=None, min_length=2, max_length=3)
+    ] = None
+    min_price: Annotated[Decimal | None, Field(default=None, ge=0)] = None
+    max_price: Annotated[Decimal | None, Field(default=None, ge=0)] = None
+    departure_time_from: time_type | None = None
+    departure_time_to: time_type | None = None
 
     @field_validator("size", mode="after")
     @classmethod
@@ -212,6 +227,14 @@ def search_query_params(
     class_: Annotated[SeatClass | None, Query(alias="class")] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1)] = MAX_PAGE_SIZE,
+    # Step 08-02 post-search filters (all optional; absent → no filtering).
+    airline: Annotated[
+        str | None, Query(min_length=2, max_length=3, pattern=r"^[A-Z0-9]{2,3}$")
+    ] = None,
+    minPrice: Annotated[Decimal | None, Query(ge=0)] = None,  # noqa: N803
+    maxPrice: Annotated[Decimal | None, Query(ge=0)] = None,  # noqa: N803
+    departureTimeFrom: Annotated[time_type | None, Query()] = None,  # noqa: N803
+    departureTimeTo: Annotated[time_type | None, Query()] = None,  # noqa: N803
 ) -> SearchQueryParams:
     """Assemble a validated ``SearchQueryParams`` from the request query string.
 
@@ -230,6 +253,11 @@ def search_query_params(
         seat_class=class_,
         page=page,
         size=size,
+        airline=airline,
+        min_price=minPrice,
+        max_price=maxPrice,
+        departure_time_from=departureTimeFrom,
+        departure_time_to=departureTimeTo,
     )
 
 
