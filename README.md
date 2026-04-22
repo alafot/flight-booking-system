@@ -8,7 +8,7 @@ From the project root:
 
 ```bash
 # Create and activate a virtual environment
-python3.12 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 
 # Install the project in editable mode with the dev extras
