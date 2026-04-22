@@ -1,6 +1,6 @@
 .PHONY: build dev_install test lint format
 
-PYTHON ?= python3.12
+PYTHON ?= python
 VENV   ?= .venv
 PIP    := $(VENV)/bin/pip
 PY     := $(VENV)/bin/python
