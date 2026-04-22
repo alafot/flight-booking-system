@@ -1,0 +1,81 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly re-scan to catch newly disclosed CVEs in unchanged code
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+  security-events: write   # upload SARIF to the Security tab
+  actions: read
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # Trivy: dependency + secret + misconfig scanning of the repo filesystem.
+  # Two-stage pattern: first generate SARIF (never fails), then gate strictly
+  # on CRITICAL/HIGH. This way findings always reach the Security tab, even
+  # when the build is about to fail.
+  # ----------------------------------------------------------------------------
+  trivy:
+    name: Trivy (deps, secrets, misconfig)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan (SARIF, non-blocking)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy-results.sarif
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+      - name: Trivy gate (fail on CRITICAL or HIGH)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: false
+          format: table
+
+  # ----------------------------------------------------------------------------
+  # CodeQL: semantic SAST for Python. Findings appear under Security → Code
+  # scanning. Branch protection can require this job to pass.
+  # ----------------------------------------------------------------------------
+  codeql:
+    name: CodeQL (Python SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-extended,security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"

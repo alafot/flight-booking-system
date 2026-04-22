@@ -1,0 +1,13 @@
+# Code ownership — first point of contact for reviews and security issues.
+# Syntax: https://docs.github.com/articles/about-code-owners
+#
+# Teams are preferred over individuals so the owner survives staff changes.
+# When using a team, the team must have write access to the repo.
+
+# Default owner for everything in this repo.
+*                              @alafot
+
+# Security-sensitive paths: require security-aware review.
+/.github/workflows/            @alafot
+/SECURITY.md                   @alafot
+/CODEOWNERS                    @alafot
