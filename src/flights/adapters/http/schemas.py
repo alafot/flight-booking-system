@@ -171,6 +171,11 @@ class SearchQueryParams(BaseModel):
     ``class`` is a Python keyword, so we alias the field to ``class_`` while
     accepting ``class`` on the wire. FastAPI binds each attribute to a
     query-string parameter via the ``Query`` dependency in ``app.py``.
+
+    ``return_date`` (camelCase ``returnDate`` on the wire) is optional;
+    when present the endpoint switches to the round-trip response shape
+    (``pairs``/``pairCount``/``flightCount``) per ADR-007. When absent
+    the legacy one-way shape is preserved for backwards compatibility.
     """
 
     origin: Annotated[
@@ -180,6 +185,7 @@ class SearchQueryParams(BaseModel):
         str, Field(min_length=3, max_length=3, pattern=IATA_PATTERN)
     ]
     departure_date: date_type
+    return_date: date_type | None = None
     passengers: Annotated[
         int, Field(ge=MIN_PASSENGERS, le=MAX_PASSENGERS)
     ] = 1
@@ -200,6 +206,7 @@ def search_query_params(
         str, Query(min_length=3, max_length=3, pattern=IATA_PATTERN)
     ],
     departureDate: Annotated[date_type, Query()],  # noqa: N803 — camelCase at wire
+    returnDate: Annotated[date_type | None, Query()] = None,  # noqa: N803
     passengers: Annotated[int, Query(ge=MIN_PASSENGERS, le=MAX_PASSENGERS)] = 1,
     # ``class`` is reserved; accept it on the wire via alias.
     class_: Annotated[SeatClass | None, Query(alias="class")] = None,
@@ -218,8 +225,46 @@ def search_query_params(
         origin=origin,
         destination=destination,
         departure_date=departureDate,
+        return_date=returnDate,
         passengers=passengers,
         seat_class=class_,
         page=page,
         size=size,
     )
+
+
+class RoundTripPairResponse(BaseModel):
+    """Single round-trip pair on the wire (step 08-01).
+
+    ``outbound`` and ``return`` are the two flight payloads serialized by
+    the route handler's ``_serialize_flight`` helper. They are typed
+    loosely as dict because the route builds them via that helper rather
+    than through a Pydantic model — keeping this schema a thin contract
+    guard rather than a second source of truth for the flight wire shape.
+
+    ``totalIndicativePrice`` is a string-encoded Decimal, mirroring the
+    quote contract (ADR-003: no float at the HTTP boundary).
+    """
+
+    outbound: dict
+    return_: Annotated[dict, Field(alias="return")]
+    totalIndicativePrice: str
+
+    model_config = {"populate_by_name": True}
+
+
+class RoundTripResponse(BaseModel):
+    """Pageable round-trip envelope (step 08-01).
+
+    Both ``pairCount`` (the total number of eligible pairs across the
+    whole result set) and ``flightCount`` (= 2 × pairCount) are pinned
+    here so clients don't recompute the redundant total themselves.
+    """
+
+    pairs: list[RoundTripPairResponse]
+    page: int
+    size: int
+    pairCount: int
+    flightCount: int
+
+    model_config = {"populate_by_name": True}

@@ -2199,3 +2199,187 @@ def _assert_zero_double_bookings(world: dict, trials: int, count: int) -> None:
         f"expected {count} double-bookings, got "
         f"{summary['double_bookings']}: {summary!r}"
     )
+
+
+# ---- Milestone 08: step 08-01 (round-trip pairing) -------------------------
+#
+# The round-trip scenarios search a driven port with ``returnDate`` set and
+# expect a *paired* response body: ``{"pairs": [...], "pairCount": N,
+# "flightCount": 2N, "page": ..., "size": ...}``. Pairing logic lives in
+# ``SearchService.search_round_trip`` and is routed to via the HTTP layer
+# when ``returnDate`` is present.
+#
+# The seeded catalog was extended with NYC→LAX and LHR→LAX return legs so
+# the standard Background ``_seed_catalog`` already yields round-trip
+# candidates for the scenarios below.
+
+
+@given(parsers.parse(
+    "a seeded catalog with outbound flights on {outbound_date} and "
+    "return flights on {return_date}"
+))
+def _seed_round_trip_catalog(
+    container, outbound_date: str, return_date: str
+) -> None:
+    """Background seed for milestone-08 round-trip scenarios.
+
+    Loads the full ``seeded_catalog()`` (which now includes NYC→LAX and
+    LHR→LAX return legs for every catalog date). The dates named in the
+    step are asserted to be covered so a future change to the catalog
+    window fails loudly rather than producing empty result sets.
+    """
+    flights = seeded_catalog()
+    dates_present = {f.departure_at.date().isoformat() for f in flights}
+    assert outbound_date in dates_present, (
+        f"outbound date {outbound_date} not in seeded catalog dates"
+    )
+    assert return_date in dates_present, (
+        f"return date {return_date} not in seeded catalog dates"
+    )
+    for flight in flights:
+        container.flight_repo.add(flight)
+
+
+@when(parsers.parse(
+    "the traveler searches {origin} to {destination} on {departure_date} "
+    "with returnDate {return_date}"
+))
+def _http_search_round_trip(
+    client,
+    world: dict,
+    origin: str,
+    destination: str,
+    departure_date: str,
+    return_date: str,
+) -> None:
+    world["response"] = client.get(
+        "/flights/search",
+        params={
+            "origin": origin,
+            "destination": destination,
+            "departureDate": departure_date,
+            "returnDate": return_date,
+        },
+    )
+
+
+@when(parsers.parse(
+    "the traveler searches a round-trip on a seeded catalog with "
+    "{count:d} candidate pairs"
+))
+def _http_search_round_trip_paginated(
+    client, container, world: dict, count: int
+) -> None:
+    """Drive /flights/search with returnDate against a catalog that has at
+    least ``count`` outbound×return combinations.
+
+    The default seeded catalog yields 30 outbound LAX→NYC flights on
+    2026-06-01 via the ``_seed_n_flights_on_route``-equivalent enumeration,
+    but the cross-product of 30 outbounds × 30 returns is 900. We pick a
+    single outbound date and seed ``count`` outbound+``count`` return
+    flights so the pair space equals ``count`` — one return per outbound,
+    arriving/departing so the 2h buffer holds.
+    """
+    from datetime import timedelta
+    outbound_date = "2026-06-01"
+    return_date = "2026-06-08"
+    outbound_base = datetime.fromisoformat(f"{outbound_date}T08:00:00+00:00")
+    return_base = datetime.fromisoformat(f"{return_date}T14:00:00+00:00")
+    for i in range(count):
+        outbound_departure = outbound_base + timedelta(minutes=i)
+        container.flight_repo.add(
+            Flight(
+                id=FlightId(f"FL-OUT-{i:03d}"),
+                origin="LAX",
+                destination="NYC",
+                departure_at=outbound_departure,
+                arrival_at=outbound_departure + timedelta(hours=5),
+                airline="AA",
+                base_fare=Money.of("299"),
+                cabin=Cabin(),
+            )
+        )
+        return_departure = return_base + timedelta(minutes=i)
+        container.flight_repo.add(
+            Flight(
+                id=FlightId(f"FL-RET-{i:03d}"),
+                origin="NYC",
+                destination="LAX",
+                departure_at=return_departure,
+                arrival_at=return_departure + timedelta(hours=5),
+                airline="AA",
+                base_fare=Money.of("299"),
+                cabin=Cabin(),
+            )
+        )
+    world["response"] = client.get(
+        "/flights/search",
+        params={
+            "origin": "LAX",
+            "destination": "NYC",
+            "departureDate": outbound_date,
+            "returnDate": return_date,
+        },
+    )
+    world["round_trip_candidate_pairs"] = count
+
+
+@then("every result is a pair where return.origin equals outbound.destination")
+def _assert_every_pair_compatible(world: dict) -> None:
+    response = world["response"]
+    assert response.status_code == 200, (
+        f"expected 200, got {response.status_code}: {response.text}"
+    )
+    body = response.json()
+    pairs = body.get("pairs")
+    assert isinstance(pairs, list) and pairs, (
+        f"expected non-empty 'pairs' list, got {body!r}"
+    )
+    for pair in pairs:
+        outbound = pair["outbound"]
+        return_leg = pair["return"]
+        assert return_leg["origin"] == outbound["destination"], (
+            f"pair mismatch: outbound.destination={outbound['destination']!r} "
+            f"return.origin={return_leg['origin']!r}"
+        )
+
+
+@then("every pair has return.departure at least 2 hours after outbound.arrival")
+def _assert_two_hour_buffer(world: dict) -> None:
+    from datetime import timedelta as _td
+    response = world["response"]
+    body = response.json()
+    pairs = body.get("pairs", [])
+    for pair in pairs:
+        outbound_arrival = datetime.fromisoformat(pair["outbound"]["arrivalAt"])
+        return_departure = datetime.fromisoformat(pair["return"]["departureAt"])
+        assert return_departure >= outbound_arrival + _td(hours=2), (
+            f"buffer violated: outbound arrives {outbound_arrival.isoformat()}, "
+            f"return departs {return_departure.isoformat()}"
+        )
+
+
+@then(parsers.parse("the response contains at most {n:d} pairs"))
+def _assert_at_most_n_pairs(world: dict, n: int) -> None:
+    body = world["response"].json()
+    pairs = body.get("pairs", [])
+    assert len(pairs) <= n, f"expected at most {n} pairs, got {len(pairs)}"
+
+
+@then(parsers.parse(
+    "pagination metadata reports both pairCount and flightCount "
+    "(flightCount = 2 * pairCount)"
+))
+def _assert_pair_and_flight_counts(world: dict) -> None:
+    body = world["response"].json()
+    assert "pairCount" in body, f"missing 'pairCount' in body: {body!r}"
+    assert "flightCount" in body, f"missing 'flightCount' in body: {body!r}"
+    pair_count = body["pairCount"]
+    flight_count = body["flightCount"]
+    assert isinstance(pair_count, int), f"pairCount must be int, got {type(pair_count)}"
+    assert isinstance(flight_count, int), (
+        f"flightCount must be int, got {type(flight_count)}"
+    )
+    assert flight_count == 2 * pair_count, (
+        f"flightCount ({flight_count}) != 2 * pairCount ({pair_count})"
+    )

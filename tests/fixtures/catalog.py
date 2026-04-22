@@ -105,6 +105,49 @@ def _international_flights(base_fare: Money) -> list[Flight]:
     return flights
 
 
+def _return_leg_flights(base_fare: Money) -> list[Flight]:
+    """Mint return-leg flights so step-08 round-trip pairing has candidates.
+
+    The baseline ``_routes()`` cross-product only emits origin∈ORIGINS and
+    destination∈DESTINATIONS. NYC is a destination but not an origin, so
+    there are zero NYC→LAX flights — a round-trip LAX→NYC→LAX can't pair
+    without these. Similarly LHR, CDG, NRT, SYD are international
+    destinations that never appear as origins. This helper adds the
+    mirrored return legs for the pairs the milestone-08 scenarios
+    exercise (LAX↔NYC, LAX↔LHR), keeping all earlier catalog invariants
+    intact (same fare, same cabin, same 30-day window).
+    """
+    return_routes = (
+        ("NYC", "LAX", RouteKind.DOMESTIC),
+        ("LHR", "LAX", RouteKind.INTERNATIONAL),
+    )
+    flights: list[Flight] = []
+    for route_index, (origin, destination, route_kind) in enumerate(return_routes):
+        for day_offset in range(CATALOG_DAYS):
+            departure_date = CATALOG_START_DATE + timedelta(days=day_offset)
+            # Depart at 14:00 UTC — comfortably after any 08:00/13:00 outbound
+            # arrival so the ≥2h buffer check has signal on same-day pairs.
+            departure_at = departure_date.replace(hour=14)
+            arrival_at = departure_at + timedelta(hours=FLIGHT_DURATION_HOURS)
+            airline = AIRLINES[(route_index + day_offset) % len(AIRLINES)]
+            date_iso = departure_date.date().isoformat()
+            flight_id = f"FL-{origin}-{destination}-{date_iso}-{airline}-RT"
+            flights.append(
+                Flight(
+                    id=FlightId(flight_id),
+                    origin=origin,
+                    destination=destination,
+                    departure_at=departure_at,
+                    arrival_at=arrival_at,
+                    airline=airline,
+                    base_fare=base_fare,
+                    cabin=_seed_cabin(),
+                    route_kind=route_kind,
+                )
+            )
+    return flights
+
+
 def seeded_catalog() -> list[Flight]:
     """Return a reproducible catalog of ≥200 flights.
 
@@ -144,4 +187,5 @@ def seeded_catalog() -> list[Flight]:
                 )
             )
     flights.extend(_international_flights(base_fare))
+    flights.extend(_return_leg_flights(base_fare))
     return flights

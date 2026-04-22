@@ -83,6 +83,45 @@ def _serialize_flight(flight: Any) -> dict:
     }
 
 
+def _search_round_trip(container: Any, params: SearchQueryParams) -> dict:
+    """Build the round-trip response body for step 08-01.
+
+    Delegates pair construction to ``SearchService.search_round_trip``
+    (the domain enforces the ≥2h layover rule). The adapter handles
+    three concerns only: converting dates to ISO strings, slicing the
+    page window from the full pair list, and rendering the wire shape.
+    """
+    assert params.return_date is not None  # guarded by caller
+    result = container.search_service.search_round_trip(
+        SearchRequest(
+            origin=params.origin,
+            destination=params.destination,
+            departure_date=params.departure_date.isoformat(),
+            return_date=params.return_date.isoformat(),
+            passengers=params.passengers,
+            page=params.page,
+            size=params.size,
+        )
+    )
+    start = (result.page - 1) * result.size
+    end = start + result.size
+    page_pairs = result.pairs[start:end]
+    return {
+        "pairs": [
+            {
+                "outbound": _serialize_flight(pair.outbound),
+                "return": _serialize_flight(pair.return_flight),
+                "totalIndicativePrice": str(pair.total_indicative_price.amount),
+            }
+            for pair in page_pairs
+        ],
+        "page": result.page,
+        "size": result.size,
+        "pairCount": result.pair_count,
+        "flightCount": result.flight_count,
+    }
+
+
 # Map BookingService commit error codes to HTTP status codes. Anything not
 # listed here falls back to 400 (bad request) — this preserves the existing
 # behaviour for FLIGHT_NOT_FOUND while making the seat-validation branches
@@ -195,6 +234,12 @@ def create_app(container: Container | None = None) -> FastAPI:
         params: Annotated[SearchQueryParams, Depends(search_query_params)],
     ) -> dict:
         c = _container(request)
+        # Step 08-01: presence of ``returnDate`` flips the response shape
+        # to the round-trip envelope (``pairs``/``pairCount``/``flightCount``).
+        # Absence preserves the legacy one-way shape (``flights``/``total``)
+        # — backwards-compatible for every pre-08-01 client.
+        if params.return_date is not None:
+            return _search_round_trip(c, params)
         result = c.search_service.search(
             SearchRequest(
                 origin=params.origin,
