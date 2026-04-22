@@ -2133,3 +2133,69 @@ def _assert_audit_event_written(
         f"expected at least one {event_type} event, got: "
         f"{[e.get('type') for e in events]}"
     )
+
+
+# ---- Milestone 07: step 07-03 (race harness — KPI-T2) ----------------------
+#
+# The harness runs 100 in-process trials. Each trial builds a fresh container,
+# seeds a flight with ONE available seat, then fires 10 barrier-synchronised
+# threads at POST /seat-locks. KPI-T2 requires every trial to produce exactly
+# one winner and nine rejections — ZERO trials with >1 winner.
+#
+# The step implementations delegate to ``scripts.race_last_seat.run_harness``
+# so the harness is exercised through the exact code path an engineer would
+# run manually (``python scripts/race_last_seat.py``). Keeping the production
+# harness as the single source of truth prevents test-only race logic from
+# drifting away from the CLI.
+
+
+@when(parsers.parse(
+    "the race-last-seat harness runs {trials:d} trials, "
+    "each with {threads:d} threads competing for one seat"
+))
+def _run_race_harness(world: dict, trials: int, threads: int) -> None:
+    """Invoke the race harness in-process and stash the summary.
+
+    We import lazily so a harness import error surfaces as a Red test
+    failure at this step rather than at module-load time.
+    """
+    from scripts.race_last_seat import run_harness
+    world["race_summary"] = run_harness(trials=trials, threads=threads)
+
+
+@then("every trial produces exactly one winner and nine rejections")
+def _assert_every_trial_perfect(world: dict) -> None:
+    """Assert the harness summary shows exactly ``trials`` winners and
+    ``trials * 9`` rejections across the full run — the "perfect" outcome
+    mandated by KPI-T2.
+    """
+    summary = world["race_summary"]
+    trials = summary["trials"]
+    assert summary["total_winners"] == trials, (
+        f"expected {trials} winners (one per trial), got "
+        f"{summary['total_winners']}: {summary!r}"
+    )
+    expected_rejected = trials * 9
+    assert summary["total_rejected"] == expected_rejected, (
+        f"expected {expected_rejected} rejections (9 per trial), got "
+        f"{summary['total_rejected']}: {summary!r}"
+    )
+
+
+@then(parsers.parse(
+    'over {trials:d} trials, the count of "double-booking" outcomes is {count:d}'
+))
+def _assert_zero_double_bookings(world: dict, trials: int, count: int) -> None:
+    """Assert ``double_bookings`` (any trial with >1 winner) matches the
+    feature's promised count — 0. A single double-booking fails KPI-T2 and
+    blocks the milestone.
+    """
+    summary = world["race_summary"]
+    assert summary["trials"] == trials, (
+        f"harness ran {summary['trials']} trials, feature asserts {trials}: "
+        f"{summary!r}"
+    )
+    assert summary["double_bookings"] == count, (
+        f"expected {count} double-bookings, got "
+        f"{summary['double_bookings']}: {summary!r}"
+    )

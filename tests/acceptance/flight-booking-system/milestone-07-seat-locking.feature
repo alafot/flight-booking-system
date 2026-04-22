@@ -23,7 +23,7 @@ Feature: Milestone 07 — Seat locking and concurrent-booking safety
     And the other nine sessions receive HTTP 409 with "seat unavailable"
     And zero sessions receive a 500
 
-  @pending @kpi @real-io
+  @kpi @real-io
   Scenario: Race harness — 100 trials, zero double-bookings
     When the race-last-seat harness runs 100 trials, each with 10 threads competing for one seat
     Then every trial produces exactly one winner and nine rejections
