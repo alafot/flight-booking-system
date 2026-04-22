@@ -66,7 +66,6 @@ def build_test_container(
     flight_repo = InMemoryFlightRepository()
     booking_repo = InMemoryBookingRepository()
     quote_store = InMemoryQuoteStore()
-    seat_lock_store = InMemorySeatLockStore()
 
     audit: InMemoryAuditLog | JsonlAuditLog = (
         JsonlAuditLog(audit_path) if audit_path is not None else InMemoryAuditLog()
@@ -75,6 +74,10 @@ def build_test_container(
     ids: DeterministicIdGenerator | UuidIdGenerator = (
         DeterministicIdGenerator() if deterministic_ids else UuidIdGenerator()
     )
+    # Route lock-id minting through the shared ``IdGenerator`` so acceptance
+    # tests observe deterministic ``L001``/``L002``/... ids. Binding to the
+    # bound-method keeps the sequence owned by the single ``ids`` instance.
+    seat_lock_store = InMemorySeatLockStore(ids=ids.new_lock_id)
     payment = MockPaymentGateway()
     email = MockEmailSender()
 

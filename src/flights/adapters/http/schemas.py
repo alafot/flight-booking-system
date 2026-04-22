@@ -101,6 +101,39 @@ class BookingRequestBody(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class SeatLockRequestBody(BaseModel):
+    """Validated body for ``POST /seat-locks`` (step 07-01).
+
+    camelCase on the wire (``flightId``/``seatIds``/``sessionId``); snake_case
+    inside. ``seatIds`` is capped at ``MAX_SEATS_PER_QUOTE`` mirroring the
+    quote contract — a seat-lock can cover multiple seats in one atomic
+    acquire, but the cap prevents a pathological single-request lock of an
+    entire cabin.
+    """
+
+    flight_id: Annotated[str, Field(alias="flightId", min_length=1)]
+    seat_ids: Annotated[
+        list[str],
+        Field(alias="seatIds", min_length=1, max_length=MAX_SEATS_PER_QUOTE),
+    ]
+    session_id: Annotated[str, Field(alias="sessionId", min_length=1)]
+
+    model_config = {"populate_by_name": True}
+
+
+class SeatLockResponse(BaseModel):
+    """Structural guard for the ``POST /seat-locks`` 201 body (step 07-01).
+
+    ``expiresAt`` is an ISO-8601 string so the client parses it with the
+    same ``datetime.fromisoformat`` that the acceptance Then step uses.
+    """
+
+    lockId: str
+    expiresAt: str
+
+    model_config = {"populate_by_name": True}
+
+
 class QuoteRequestBody(BaseModel):
     """Validated body for ``POST /quotes`` (ADR-002 + ADR-006).
 

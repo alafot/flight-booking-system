@@ -1665,3 +1665,254 @@ def _assert_money_fields_round_trip_through_decimal(world: dict) -> None:
             f"seat {line['seat']!r} amount round-trip mismatch: "
             f"str(Decimal({amount!r})) = {str(parsed)!r}"
         )
+
+
+# ---- Milestone 07: seat-lock steps (step 07-01) -----------------------------
+#
+# Step 07-01 wires the POST /seat-locks endpoint and the SeatLockStore primitive
+# (coarse lock-per-store, 10-min TTL, expired-treated-as-free). Scenarios
+# enabled by this slice:
+#
+#   * "Single session acquires a lock on an available seat"   — happy path.
+#   * "A second session sees the locked seat as unavailable"  — seat map
+#     composes SeatLockStore state with bookings to mark seats OCCUPIED to
+#     other sessions.
+#   * "Lock auto-expires after 10 minutes"                    — TTL edge.
+#
+# The Background reserves seat "30F" as the only AVAILABLE seat so the
+# scenarios have a single unambiguous target. The Given below seeds the flight
+# with a minimal cabin containing just 30F — keeping the fixture narrative-
+# pinned rather than cluttering the flight with dozens of irrelevant seats.
+
+
+@given(parsers.parse(
+    'a flight "{flight_id}" where seat "{seat_id}" is the only remaining '
+    "AVAILABLE seat"
+))
+def _seed_milestone_07_flight_single_available_seat(
+    container, world: dict, flight_id: str, seat_id: str,
+) -> None:
+    """Seed a flight whose cabin has exactly one AVAILABLE seat, identified
+    by ``seat_id``. Other seats are irrelevant to milestone-07 assertions —
+    omitting them keeps the fixture narrow. The HTTP route observes this via
+    the real flight repository so the seat-map response is produced by
+    production code paths.
+    """
+    departure = datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
+    cabin = Cabin()
+    cabin.seats[SeatId(seat_id)] = Seat(
+        id=SeatId(seat_id),
+        seat_class=SeatClass.ECONOMY,
+        kind=SeatKind.STANDARD,
+        status=SeatStatus.AVAILABLE,
+    )
+    flight = Flight(
+        id=FlightId(flight_id),
+        origin="LAX",
+        destination="NYC",
+        departure_at=departure,
+        arrival_at=departure,
+        airline="MOCK",
+        base_fare=Money.of("299"),
+        cabin=cabin,
+    )
+    container.flight_repo.add(flight)
+    world["last_flight_id"] = flight_id
+
+
+@when(parsers.parse(
+    'session "{session_id}" requests a lock on seat "{seat_id}" '
+    'for flight "{flight_id}"'
+))
+def _http_request_seat_lock_for_flight(
+    client, world: dict, session_id: str, seat_id: str, flight_id: str,
+) -> None:
+    """Drive POST /seat-locks with an explicit flightId + seatIds + sessionId.
+
+    Stashes the response so subsequent Thens can assert on status and body
+    fields (lockId, expiresAt, conflicts).
+    """
+    world["response"] = client.post(
+        "/seat-locks",
+        json={
+            "flightId": flight_id,
+            "seatIds": [seat_id],
+            "sessionId": session_id,
+        },
+    )
+    world["last_flight_id"] = flight_id
+
+
+@when(parsers.parse('session "{session_id}" requests a lock on seat "{seat_id}"'))
+def _http_request_seat_lock_short(
+    client, world: dict, session_id: str, seat_id: str,
+) -> None:
+    """Alias When — uses ``world["last_flight_id"]`` when the feature file
+    omits the flight id. Covers the "Lock auto-expires" scenario where the
+    Background already pinned the flight under test.
+    """
+    flight_id = world["last_flight_id"]
+    world["response"] = client.post(
+        "/seat-locks",
+        json={
+            "flightId": flight_id,
+            "seatIds": [seat_id],
+            "sessionId": session_id,
+        },
+    )
+
+
+@then(parsers.parse(
+    "the response contains a lock id and an expiresAt 10 minutes in the future"
+))
+def _assert_lock_id_and_expires_at_ten_minutes(
+    frozen_clock: FrozenClock, world: dict,
+) -> None:
+    """Assert the 201 body has a non-empty lockId and an expiresAt exactly
+    10 minutes after the frozen clock — anchoring TTL computation on the
+    production clock port, not ``datetime.now()``.
+    """
+    from datetime import timedelta
+    body = world["response"].json()
+    lock_id = body.get("lockId")
+    assert lock_id, f"response missing lockId: {body!r}"
+    expires_at_str = body.get("expiresAt")
+    assert expires_at_str, f"response missing expiresAt: {body!r}"
+    expires_at = datetime.fromisoformat(expires_at_str)
+    expected = frozen_clock.now() + timedelta(minutes=10)
+    assert expires_at == expected, (
+        f"expiresAt {expires_at.isoformat()} != frozen_clock + 10min "
+        f"{expected.isoformat()}"
+    )
+
+
+@given(parsers.parse('session "{session_id}" holds a valid lock on seat "{seat_id}"'))
+def _seed_session_holds_valid_lock(
+    client, world: dict, session_id: str, seat_id: str,
+) -> None:
+    """Drive POST /seat-locks through the HTTP port so the lock is installed
+    by production code (not by direct store manipulation). Asserts the 201
+    outcome so a wiring regression surfaces at the Given, not at the Then.
+    """
+    flight_id = world["last_flight_id"]
+    response = client.post(
+        "/seat-locks",
+        json={
+            "flightId": flight_id,
+            "seatIds": [seat_id],
+            "sessionId": session_id,
+        },
+    )
+    assert response.status_code == 201, (
+        f"failed to seed lock for session {session_id!r}: "
+        f"{response.status_code} {response.text}"
+    )
+
+
+@when(parsers.parse('session "{session_id}" requests the seat map for "{flight_id}"'))
+def _http_session_requests_seat_map(
+    client, world: dict, session_id: str, flight_id: str,
+) -> None:
+    """GET the seat map while identifying the requesting session via the
+    ``sessionId`` query parameter. The SeatMapService marks seats OCCUPIED to
+    the requester when another session holds a valid lock; the same query
+    from the lock-holder's own session would leave them AVAILABLE (covered by
+    unit tests — not asserted here).
+    """
+    world["response"] = client.get(
+        f"/flights/{flight_id}/seats",
+        params={"sessionId": session_id},
+    )
+
+
+@then(parsers.parse(
+    'seat "{seat_id}" is reported as unavailable to session "{session_id}"'
+))
+def _assert_seat_unavailable_to_session(
+    world: dict, seat_id: str, session_id: str,
+) -> None:
+    """Assert the seat map returned to ``session_id`` reports ``seat_id`` as
+    OCCUPIED (the only non-AVAILABLE status the contract exposes that maps
+    to "unavailable to the traveler"). BLOCKED would also be "unavailable"
+    but carries the wrong narrative — BLOCKED = ops-maintenance.
+    """
+    body = world["response"].json()
+    seats = body.get("seats", [])
+    match = next((s for s in seats if s.get("seatId") == seat_id), None)
+    assert match is not None, f"seat {seat_id} not in response: {body!r}"
+    status = match.get("status")
+    assert status == "OCCUPIED", (
+        f"seat {seat_id} expected OCCUPIED for session {session_id}, got {status!r}"
+    )
+
+
+@given(parsers.parse(
+    'session "{session_id}" holds a lock on seat "{seat_id}" acquired at {time}'
+))
+def _seed_session_holds_lock_at(
+    client, container, world: dict, session_id: str, seat_id: str, time: str,
+) -> None:
+    """Seed a lock acquired at a specific wall-clock time. The Background
+    already frozen the clock at 10:00:00; ``time`` is a sanity tag for the
+    narrative, and we assert the clock matches it so a mis-anchored scenario
+    fails loudly rather than silently drifts.
+    """
+    from datetime import time as time_type
+    expected = time_type.fromisoformat(time)
+    actual = container.clock.now().time()
+    assert actual.replace(microsecond=0) == expected, (
+        f"Given expects clock at {time}, but container clock is at {actual}"
+    )
+    flight_id = world["last_flight_id"]
+    response = client.post(
+        "/seat-locks",
+        json={
+            "flightId": flight_id,
+            "seatIds": [seat_id],
+            "sessionId": session_id,
+        },
+    )
+    assert response.status_code == 201, (
+        f"failed to seed lock: {response.status_code} {response.text}"
+    )
+
+
+@when(parsers.parse("the clock advances to {time}"))
+def _advance_clock_to(
+    frozen_clock: FrozenClock, container, time: str,
+) -> None:
+    """Advance both the fixture clock and the container clock to the specified
+    wall-clock time on the same day. Mirrors ``_advance_clock`` (by-minutes
+    variant) but uses an absolute target so the TTL-boundary scenario can
+    cite "10:10:01" directly from the feature file.
+    """
+    target_time = datetime.strptime(time, "%H:%M:%S").time()
+    current = container.clock.now()
+    target = current.replace(
+        hour=target_time.hour,
+        minute=target_time.minute,
+        second=target_time.second,
+        microsecond=0,
+    )
+    if target < current:
+        raise AssertionError(
+            f"advance-to target {time} is in the past relative to {current}"
+        )
+    delta = target - current
+    frozen_clock.advance(delta)
+    container.clock.advance(delta)
+
+
+@then(parsers.parse('session "{session_id}" receives HTTP 201 with a new lock'))
+def _assert_session_receives_201_with_lock(world: dict, session_id: str) -> None:
+    """Assert the last HTTP response is a 201 and carries a non-empty lockId.
+    This is the "lock auto-expires" scenario's Then — proving the second
+    session's acquire succeeds once the TTL of the first lock has elapsed.
+    """
+    response = world["response"]
+    assert response.status_code == 201, (
+        f"expected HTTP 201 for session {session_id}, got "
+        f"{response.status_code}: {response.text}"
+    )
+    body = response.json()
+    assert body.get("lockId"), f"response missing lockId: {body!r}"

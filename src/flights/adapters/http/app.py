@@ -17,6 +17,8 @@ from fastapi.responses import JSONResponse
 from flights.adapters.http.schemas import (
     QuoteRequestBody,
     QuoteResponse,
+    SeatLockRequestBody,
+    SeatLockResponse,
     SeatSurchargeResponse,
     SearchQueryParams,
     search_query_params,
@@ -207,9 +209,14 @@ def create_app(container: Container | None = None) -> FastAPI:
         }
 
     @app.get("/flights/{flight_id}/seats")
-    def get_seats(request: Request, flight_id: str) -> dict:
+    def get_seats(
+        request: Request, flight_id: str, sessionId: str | None = None,  # noqa: N803 — camelCase at wire
+    ) -> dict:
         c = _container(request)
-        entries = c.seat_map_service.view(FlightId(flight_id))
+        requesting_session = SessionId(sessionId) if sessionId else None
+        entries = c.seat_map_service.view(
+            FlightId(flight_id), session_id=requesting_session,
+        )
         if entries is None:
             raise HTTPException(status_code=404, detail="flight not found")
         return {
@@ -244,11 +251,42 @@ def create_app(container: Container | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(departed)) from departed
         return _serialize_quote(quote)
 
-    @app.post("/seat-locks")
-    def post_seat_lock() -> dict:  # pragma: no cover — RED scaffold
-        raise HTTPException(
-            status_code=501, detail="seat locks not yet implemented — Phase 07"
+    @app.post("/seat-locks", status_code=201)
+    def post_seat_lock(
+        request: Request, payload: SeatLockRequestBody,
+    ) -> JSONResponse:
+        """Acquire a 10-minute seat lock for a session (step 07-01).
+
+        201 with ``{lockId, expiresAt}`` on acquire; 409 with
+        ``{detail: "seat unavailable", conflicts: [...]}`` when another
+        session already holds a live lock on any requested seat.
+
+        The 409 body is flat (``detail``/``conflicts`` at top level) so
+        callers don't have to unwrap a nested FastAPI ``HTTPException.detail``
+        envelope. Returning a ``JSONResponse`` directly keeps the contract
+        explicit and matches the integration-test expectations.
+        """
+        c = _container(request)
+        result = c.seat_hold_service.acquire(
+            flight_id=FlightId(payload.flight_id),
+            seat_ids=tuple(SeatId(s) for s in payload.seat_ids),
+            session_id=SessionId(payload.session_id),
         )
+        if not result.success:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "seat unavailable",
+                    "conflicts": [s.value for s in result.conflicts],
+                },
+            )
+        assert result.lock_id is not None  # success invariant
+        assert result.expires_at is not None
+        body = SeatLockResponse(
+            lockId=result.lock_id,
+            expiresAt=result.expires_at.isoformat(),
+        ).model_dump(by_alias=True)
+        return JSONResponse(status_code=201, content=body)
 
     @app.post("/bookings", status_code=201)
     def post_booking(request: Request, payload: dict) -> dict:
