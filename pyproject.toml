@@ -49,3 +49,8 @@ target-version = "py314"
 [tool.mypy]
 python_version = "3.14"
 exclude = ["tests/acceptance/flight-booking-system/"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
+# B101 (assert_used) is noise in non-test Python; keep it off project-wide.
+skips = ["B101"]
