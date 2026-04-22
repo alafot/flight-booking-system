@@ -1,6 +1,6 @@
 # flight-booking-system — Claude Code project context
 
-Python backend. Developed under nWave methodology; artifacts live in `docs/product/` (SSOT) and `docs/feature/flight-booking-system/` (feature delta).
+Python backend implementing the spec at `Flight-Booking-System.pdf`. Developed under nWave methodology; artifacts live in `docs/product/` (SSOT) and `docs/feature/flight-booking-system/` (feature delta).
 
 ## Development Paradigm
 
