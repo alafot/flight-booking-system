@@ -39,6 +39,11 @@ class BookingRepository(Protocol):
 class QuoteStore(Protocol):
     def save(self, quote: Quote) -> None: ...
     def get_valid(self, quote_id: QuoteId, now: datetime) -> Quote | None: ...
+    # ``get`` ignores TTL — exposes the raw saved quote so callers can
+    # distinguish "expired" (stored but past expires_at) from "unknown"
+    # (never saved). BookingService.commit uses both methods to map a
+    # missing valid quote to the correct HTTP status (410 vs 404).
+    def get(self, quote_id: QuoteId) -> Quote | None: ...
 
 
 @runtime_checkable

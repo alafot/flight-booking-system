@@ -78,6 +78,29 @@ class QuoteResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class BookingRequestBody(BaseModel):
+    """Validated body for ``POST /bookings`` (step 06-03).
+
+    ``quoteId`` is optional per ADR-006: when present, ``BookingService``
+    looks up the quote and charges its locked-in total (KPI-T1). When
+    absent, the walking-skeleton path charges ``flight.base_fare`` — kept
+    explicitly for backward compatibility with the step-01-03 WS clients.
+
+    The schema is declared here as the canonical wire contract; the
+    current ``app.py`` still accepts a loose ``dict`` payload so existing
+    integration tests keep working. A follow-up slice will route the
+    endpoint through this model once every integration test migrates.
+    """
+
+    flight_id: Annotated[str, Field(alias="flightId", min_length=1)]
+    seat_id: Annotated[str, Field(alias="seatId", min_length=1)]
+    passenger: dict  # {"name": "..."} — tightened in a later slice
+    payment_token: Annotated[str, Field(alias="paymentToken", min_length=1)]
+    quote_id: Annotated[str | None, Field(alias="quoteId", default=None)] = None
+
+    model_config = {"populate_by_name": True}
+
+
 class QuoteRequestBody(BaseModel):
     """Validated body for ``POST /quotes`` (ADR-002 + ADR-006).
 

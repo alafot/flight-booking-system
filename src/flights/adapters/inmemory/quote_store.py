@@ -39,3 +39,15 @@ class InMemoryQuoteStore:
             if now >= quote.expires_at:
                 return None
             return quote
+
+    def get(self, quote_id: QuoteId) -> Quote | None:
+        """Return the saved quote regardless of TTL, or None if never saved.
+
+        Step 06-03: BookingService.commit calls both ``get_valid`` and
+        ``get`` so the "quote not found" (404) branch can be distinguished
+        from the "quote expired" (410) branch. Without this method the
+        service would only be able to say "no valid quote" and would need
+        heuristics to map to the right HTTP status.
+        """
+        with self._lock:
+            return self._quotes.get(quote_id)

@@ -93,6 +93,11 @@ _COMMIT_ERROR_HTTP_STATUS: dict[str, int] = {
     # Phase 06-02: payment declined is a client-side financial failure —
     # RFC 7231 reserves 402 Payment Required for this case.
     "PAYMENT_DECLINED": 402,
+    # Step 06-03: quote-trust branches. 410 Gone is the canonical
+    # "resource was here but is no longer available" — fits a quote that
+    # has crossed its 30-minute TTL. 404 is the standard "never existed".
+    "QUOTE_EXPIRED": 410,
+    "QUOTE_NOT_FOUND": 404,
 }
 
 
@@ -258,11 +263,23 @@ def create_app(container: Container | None = None) -> FastAPI:
                 status_code=422, detail=f"missing field: {missing.args[0]}"
             ) from missing
 
+        # Step 06-03: ``quoteId`` is optional. Present → BookingService
+        # honors the quote's locked-in total and maps TTL/unknown-id to
+        # 410/404. Absent → walking-skeleton path (charges base_fare).
+        # ``BookingRequestBody`` is deliberately not a pydantic model yet
+        # because the existing WS integration tests post loose dicts; we
+        # tighten the schema in a later slice.
+        from flights.domain.model.ids import QuoteId
+
+        raw_quote_id = payload.get("quoteId")
+        quote_id = QuoteId(raw_quote_id) if raw_quote_id is not None else None
+
         commit_request = CommitRequest(
             flight_id=flight_id,
             seat_ids=(seat_id,),
             passengers=(PassengerDetails(full_name=passenger_name),),
             payment_token=payment_token,
+            quote_id=quote_id,
         )
         result = c.booking_service.commit(commit_request)
         if result.booking is None:

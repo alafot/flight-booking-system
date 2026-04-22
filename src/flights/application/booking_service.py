@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 
 from flights.domain.model.booking import Booking, BookingStatus
 from flights.domain.model.ids import BookingReference, FlightId, QuoteId, SeatId, SessionId
 from flights.domain.model.passenger import PassengerDetails
+from flights.domain.model.quote import Quote
 from flights.domain.model.seat import SeatStatus
 from flights.domain.ports import (
     AuditLog,
@@ -54,6 +56,21 @@ class CommitResult:
     booking: Booking | None
     error_code: str | None = None
     error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class _QuoteLookup:
+    """Internal return type for :meth:`BookingService._resolve_quote`.
+
+    Exactly one of ``quote`` or ``error`` is set when ``request.quote_id`` is
+    present; both are None when no quote id was supplied (backward-compat
+    walking-skeleton path). Captures the "expired vs unknown" distinction
+    inside the service so the HTTP adapter maps a single error_code to the
+    right status code.
+    """
+
+    quote: Quote | None = None
+    error: CommitResult | None = None
 
 
 class BookingService:
@@ -89,8 +106,20 @@ class BookingService:
                     error_message=f"flight {request.flight_id.value} not found",
                 )
 
-            # Phase 04: verify quote via self._quotes.get_valid(request.quote_id, now).
+            # Step 06-03: honor the quote's locked-in total (ADR-006 KPI-T1).
+            # When ``request.quote_id`` is present we look up the quote and:
+            #   * 404 if the id was never issued (``get`` returns None).
+            #   * 410 if the id is known but past its 30-min TTL
+            #     (``get_valid`` returns None but ``get`` returns a quote).
+            #   * charge ``quote.price_breakdown.total`` — never recomputed
+            #     from current flight state — when the quote is live.
+            # Without a ``quote_id`` (walking-skeleton backward-compat path)
+            # the service falls back to ``flight.base_fare`` as before.
             # Phase 07: verify lock via self._locks.is_valid(request.lock_id, now).
+            now = self._clock.now()
+            quote_lookup = self._resolve_quote(request.quote_id, now)
+            if quote_lookup.error is not None:
+                return quote_lookup.error
 
             # Step 03-03: seat validation BEFORE charging payment. The three
             # branches below correspond to the three failure modes enumerated
@@ -100,9 +129,12 @@ class BookingService:
             if seat_error is not None:
                 return seat_error
 
-            total = flight.base_fare
+            total = (
+                quote_lookup.quote.price_breakdown.total
+                if quote_lookup.quote is not None
+                else flight.base_fare
+            )
             payment_result = self._payment.charge(request.payment_token, total)
-            now = self._clock.now()
             # Phase 06-02: payment-declined branch. When the gateway returns
             # succeeded=False we write a PaymentFailed audit event (so the
             # replay/forensic trail captures the attempt) and return a
@@ -134,7 +166,14 @@ class BookingService:
                 )
 
             reference = self._ids.new_booking_reference()
-            quote_id = request.quote_id or QuoteId("Q000-WS")
+            # Step 06-03: carry the real quote id onto the booking when the
+            # commit consumed a quote. The "Q000-WS" sentinel is the
+            # walking-skeleton path (no quote) — audit replay skips it.
+            quote_id = (
+                quote_lookup.quote.id
+                if quote_lookup.quote is not None
+                else QuoteId("Q000-WS")
+            )
             booking = Booking(
                 reference=reference,
                 flight_id=request.flight_id,
@@ -168,6 +207,44 @@ class BookingService:
 
     def get(self, reference: BookingReference) -> Booking | None:
         return self._bookings.get(reference)
+
+    def _resolve_quote(
+        self, quote_id: QuoteId | None, now: datetime
+    ) -> _QuoteLookup:
+        """Look up the request's quote and classify the three possible states.
+
+        * No quote_id supplied → empty lookup (walking-skeleton path).
+        * quote_id issued and still within TTL → ``quote`` populated.
+        * quote_id issued but past ``expires_at`` → QUOTE_EXPIRED error (410).
+        * quote_id never issued → QUOTE_NOT_FOUND error (404).
+
+        The 410-vs-404 distinction uses two ``QuoteStore`` calls:
+        ``get_valid`` enforces the TTL, ``get`` ignores it. If ``get_valid``
+        returns None but ``get`` returns a quote, the only possible cause is
+        TTL expiry — so we map that to QUOTE_EXPIRED. ``get`` returning None
+        means the id was never seen, so we map that to QUOTE_NOT_FOUND.
+        """
+        if quote_id is None:
+            return _QuoteLookup()
+        valid = self._quotes.get_valid(quote_id, now)
+        if valid is not None:
+            return _QuoteLookup(quote=valid)
+        raw = self._quotes.get(quote_id)
+        if raw is None:
+            return _QuoteLookup(
+                error=CommitResult(
+                    booking=None,
+                    error_code="QUOTE_NOT_FOUND",
+                    error_message=f"quote not found: {quote_id.value}",
+                )
+            )
+        return _QuoteLookup(
+            error=CommitResult(
+                booking=None,
+                error_code="QUOTE_EXPIRED",
+                error_message=f"quote expired: {quote_id.value}",
+            )
+        )
 
     def _validate_seats(
         self, flight: "object", request: CommitRequest

@@ -639,6 +639,278 @@ def _assert_replay_produces_same_total(world: dict) -> None:
     )
 
 
+# ---- Milestone 06: quote-trust commit steps (step 06-03) --------------------
+#
+# Step 06-03 wires ``BookingService.commit`` to honor the quote's locked-in
+# total. The steps below drive the three previously-@pending scenarios:
+#
+#   * "Commit within 30 minutes honors the quoted total even if demand changed"
+#   * "Commit after TTL returns 410 Gone"
+#   * "Commit with an unknown quote id returns 404"
+#
+# For the @kpi honors-the-quote scenario the Given replaces the Milestone-06
+# background flight with one whose (base_fare, route_kind, departure-date)
+# trio pins the quote total at exactly 228.74 USD — see the comment on
+# ``_QUOTE_TOTAL_228_74_BASE_FARE`` for the derivation. That lets the
+# assertion cite the literal amount from the feature file while keeping the
+# price math deterministic under the frozen clock.
+
+
+# Base fare chosen so that POST /quotes returns total = 228.74 USD under the
+# milestone-06 frozen clock (2026-04-25 10:00 UTC) and a 2026-06-02 TUE
+# departure (38 days out), with zero occupancy and DOMESTIC route:
+#   228.74 = 278.14 × 0.90 (time) × 0.85 (dow) × 1.075 (domestic tax)
+# All multipliers come from the Appendix B rule tables. Any change to those
+# tables invalidates this seed — the scenario will fail loudly rather than
+# silently drift off the KPI anchor.
+_QUOTE_TOTAL_228_74_BASE_FARE = "278.14"
+
+
+@when(parsers.parse("the traveler creates a quote with total {amount} USD"))
+def _http_create_quote_with_specific_total(
+    container, client, world: dict, amount: str,
+) -> None:
+    """Reseed the milestone-06 flight with a base fare that produces ``amount``
+    as the quote total under the frozen clock, then drive POST /quotes.
+    The pricing inputs (days-before, dow, occupancy, tax rate) are pinned by
+    the Background; only the base fare varies so the total matches the anchor.
+    """
+    # Only 228.74 is used by the milestone-06 @kpi scenario. Guard against
+    # silent misuse: if a future scenario cites a different total we need an
+    # explicit base-fare derivation for it rather than copy-pasting the seed.
+    assert amount == "228.74", (
+        f"step only supports the 228.74 KPI anchor; got {amount!r}"
+    )
+    flight_id = world["last_flight_id"]
+    base_fare = Money.of(_QUOTE_TOTAL_228_74_BASE_FARE)
+    # Replace the flight with one that has the target base fare. The
+    # milestone-06 Given seeded a 100-seat cabin with seat 12C AVAILABLE and
+    # 99 fillers AVAILABLE — preserve that so occupancy stays at 0%.
+    departure = datetime(2026, 6, 2, 8, 0, tzinfo=UTC)
+    cabin = Cabin()
+    cabin.seats[SeatId("12C")] = Seat(
+        id=SeatId("12C"),
+        seat_class=SeatClass.ECONOMY,
+        kind=SeatKind.STANDARD,
+        status=SeatStatus.AVAILABLE,
+    )
+    for index in range(1, 100):
+        seat_id = SeatId(f"FILL-{index:03d}")
+        cabin.seats[seat_id] = Seat(
+            id=seat_id,
+            seat_class=SeatClass.ECONOMY,
+            kind=SeatKind.STANDARD,
+            status=SeatStatus.AVAILABLE,
+        )
+    flight = Flight(
+        id=FlightId(flight_id),
+        origin="LAX",
+        destination="NYC",
+        departure_at=departure,
+        arrival_at=departure,
+        airline="MOCK",
+        base_fare=base_fare,
+        cabin=cabin,
+    )
+    container.flight_repo.add(flight)  # add is idempotent; overwrites by id
+
+    response = client.post(
+        "/quotes",
+        json={
+            "flightId": flight_id,
+            "seatIds": ["12C"],
+            "passengers": 1,
+        },
+    )
+    assert response.status_code == 200, (
+        f"quote creation failed: {response.status_code} {response.text}"
+    )
+    body = response.json()
+    assert body["total"] == amount, (
+        f"seeded flight produced total {body['total']}, expected {amount}"
+    )
+    world["response"] = response
+    world["quote_id"] = body["quoteId"]
+    world["quote_total"] = body["total"]
+
+
+@when("the traveler creates a quote")
+def _http_create_quote_default(client, world: dict) -> None:
+    """Drive POST /quotes against the milestone-06 background flight with seat
+    "12C". Stashes the quoteId so the later "commits using that quote id"
+    step can reference it.
+    """
+    response = client.post(
+        "/quotes",
+        json={
+            "flightId": world["last_flight_id"],
+            "seatIds": ["12C"],
+            "passengers": 1,
+        },
+    )
+    assert response.status_code == 200, (
+        f"quote creation failed: {response.status_code} {response.text}"
+    )
+    world["response"] = response
+    world["quote_id"] = response.json()["quoteId"]
+    world["quote_total"] = response.json()["total"]
+
+
+@when("the flight's occupancy subsequently jumps into the 86%+ bracket")
+def _jump_occupancy_to_86(container, world: dict) -> None:
+    """Mutate the flight's cabin so current-state occupancy lands in the 86%+
+    demand bucket. Simplest mutation: flip fillers to BLOCKED until we reach
+    the threshold (BLOCKED counts as occupied per ``_occupancy_pct`` and
+    doesn't pollute the booking repository).
+
+    The test only asserts the booking's total_charged equals the quote's
+    pre-jump total, so the exact % above 86 is irrelevant — we just need to
+    cross the bracket boundary.
+    """
+    flight = container.flight_repo.get(FlightId(world["last_flight_id"]))
+    if flight is None:
+        raise AssertionError("milestone-06 flight not seeded")
+    total_seats = flight.cabin.seat_count()
+    # 86% of 100 = 86 — flip the first 86 fillers to BLOCKED. The quoted seat
+    # (12C) stays AVAILABLE so the commit can still claim it.
+    target_occupied = (total_seats * 86 + 99) // 100  # ceil(seats * 0.86)
+    flipped = 0
+    for seat_id, seat in list(flight.cabin.seats.items()):
+        if flipped >= target_occupied:
+            break
+        if seat_id == SeatId("12C"):
+            continue  # never block the seat we're about to book
+        if seat.status != SeatStatus.BLOCKED:
+            flight.cabin.seats[seat_id] = Seat(
+                id=seat.id,
+                seat_class=seat.seat_class,
+                kind=seat.kind,
+                status=SeatStatus.BLOCKED,
+            )
+            flipped += 1
+    assert flipped >= target_occupied, (
+        f"could not flip enough seats to 86%+ bracket: flipped {flipped}, "
+        f"needed {target_occupied}"
+    )
+
+
+@when(parsers.parse("the clock advances by {minutes:d} minutes"))
+def _advance_clock(
+    frozen_clock: FrozenClock, container, minutes: int,
+) -> None:
+    """Advance both the fixture clock (used by Then assertions that read
+    ``frozen_clock.now()``) and the container's internal clock (used by
+    production code through the ``Clock`` port) by the same delta.
+
+    ``build_test_container`` constructs its own ``FrozenClock`` from the
+    fixture's initial instant, so the two clocks are independent instances
+    after container creation. The step must advance both to keep TTL
+    arithmetic consistent on the production path.
+    """
+    from datetime import timedelta
+
+    delta = timedelta(minutes=minutes)
+    frozen_clock.advance(delta)
+    container.clock.advance(delta)
+
+
+@when("the traveler commits the booking using that quote id")
+def _http_commit_with_stashed_quote_id(client, world: dict) -> None:
+    """POST /bookings with the quoteId captured from the earlier POST /quotes.
+    Seat "12C" is the quoted seat; passenger + payment token are narrative
+    defaults (the scenario asserts on total_charged, not on them).
+    """
+    quote_id = world.get("quote_id")
+    assert quote_id, "no quote_id captured — run the quote-creation step first"
+    response = client.post(
+        "/bookings",
+        json={
+            "flightId": world["last_flight_id"],
+            "seatId": "12C",
+            "passenger": {"name": "Jane Doe"},
+            "paymentToken": "mock-ok",
+            "quoteId": quote_id,
+        },
+    )
+    world["response"] = response
+
+
+@when(parsers.parse('the traveler commits a booking with quoteId "{quote_id}"'))
+def _http_commit_with_literal_quote_id(client, world: dict, quote_id: str) -> None:
+    """POST /bookings with a literal quoteId string (scenario: "UNKNOWN") so
+    we can exercise the 404 "quote not found" branch.
+
+    The flight and seat still need to be valid so the BookingService reaches
+    the quote-lookup branch before any seat-validation error short-circuits.
+    """
+    response = client.post(
+        "/bookings",
+        json={
+            "flightId": world["last_flight_id"],
+            "seatId": "12C",
+            "passenger": {"name": "Jane Doe"},
+            "paymentToken": "mock-ok",
+            "quoteId": quote_id,
+        },
+    )
+    world["response"] = response
+
+
+@then(parsers.parse("the booking's total_charged is exactly {amount} USD"))
+def _assert_booking_total_charged(world: dict, amount: str) -> None:
+    """Assert the response body's ``totalCharged.amount`` matches ``amount``
+    exactly (Money values are strings on the wire so Decimal precision holds).
+    """
+    body = world["response"].json()
+    total = body.get("totalCharged", {})
+    actual = total.get("amount")
+    assert actual == amount, (
+        f"expected total_charged {amount}, got {actual!r} in {body!r}"
+    )
+
+
+@then(parsers.parse(
+    'the audit log contains a "{event_type}" event referencing the quote id and total'
+))
+def _assert_booking_committed_references_quote_and_total(
+    container, world: dict, event_type: str,
+) -> None:
+    """Assert the audit log contains an event of ``event_type`` whose
+    ``quote_id`` and ``total_charged`` match the quote created earlier. This
+    is the KPI-T1 audit check: the committed event must reference the same
+    quote the traveler saw and the same total they were charged.
+    """
+    events = getattr(container.audit, "events", [])
+    quote_id = world["quote_id"]
+    expected_total = world["quote_total"]
+    match = next(
+        (
+            e for e in events
+            if e.get("type") == event_type
+            and e.get("quote_id") == quote_id
+            and e.get("total_charged") == expected_total
+        ),
+        None,
+    )
+    assert match is not None, (
+        f"no {event_type} event for quote_id={quote_id!r} total={expected_total!r} "
+        f"in {events!r}"
+    )
+
+
+@then(parsers.parse('no "{event_type}" event is written to the audit log'))
+def _assert_no_event_written(container, event_type: str) -> None:
+    """Assert the audit log contains zero events of ``event_type`` — used by
+    the "Commit after TTL" scenario to verify the expired-quote branch does
+    not leak a successful-commit audit trail.
+    """
+    events = getattr(container.audit, "events", [])
+    offending = [e for e in events if e.get("type") == event_type]
+    assert offending == [], (
+        f"expected no {event_type} events, got {offending!r}"
+    )
+
+
 # ---- Adapter integration: JsonlAuditLog filesystem scenario -----------------
 
 @given("an audit log at a temporary JSON-lines file")

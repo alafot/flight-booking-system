@@ -82,8 +82,14 @@ def verify_commits(events: list[dict]) -> list[ReplayMismatch]:
       shortcut — see module docstring).
     * A commit whose ``quote_id`` has no matching QuoteCreated is a
       mismatch ("quote not found").
-    * A commit whose replayed total does not string-equal ``total_charged``
-      is a mismatch with both values in the reason.
+    * A commit whose charged total does not equal the QuoteCreated event's
+      recorded ``total`` is a mismatch with both values in the reason.
+      Step 06-03: we cross-check the commit against the **stored quote
+      total** rather than re-deriving from base_fare + multipliers, because
+      the QuoteCreated event schema does not carry taxes / surcharges /
+      fees separately — the canonical price the traveler saw is the
+      pre-rendered ``total`` field. ``replay_quote`` remains a diagnostic
+      used for the pre-tax subset (milestone-04 scenarios).
     """
     quotes_by_id = {
         event["quote_id"]: event
@@ -107,14 +113,14 @@ def verify_commits(events: list[dict]) -> list[ReplayMismatch]:
                 )
             )
             continue
-        replayed = replay_quote(matching_quote)
+        quoted_total = matching_quote.get("total", "<missing>")
         charged = event.get("total_charged", "<missing>")
-        if str(replayed.total.amount) != charged:
+        if quoted_total != charged:
             mismatches.append(
                 ReplayMismatch(
                     booking_reference=booking_reference,
                     reason=(
-                        f"replayed={replayed.total.amount} "
+                        f"quoted={quoted_total} "
                         f"charged={charged}"
                     ),
                 )
